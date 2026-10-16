@@ -1,0 +1,3 @@
+[submodule "external/wiiuse"]
+	path = external/wiiuse
+	url = https://github.com/MartinBloedorn/wiiuse.git
