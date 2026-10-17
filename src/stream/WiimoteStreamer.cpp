@@ -29,6 +29,7 @@ const ButtonName sChuckButtons[] = {
     {NUNCHUK_BUTTON_Z, "chuck/button/z"},
 };
 
+const char *sIrDotPaths[] = {"mote/ir/dot/0", "mote/ir/dot/1", "mote/ir/dot/2", "mote/ir/dot/3"};
 const char *sBoardSensorPaths[] = {"fit/raw/0", "fit/raw/1", "fit/raw/2", "fit/raw/3"};
 const char *sBoardCornerPaths[] = {"fit/corner/0", "fit/corner/1", "fit/corner/2", "fit/corner/3"};
 
@@ -67,6 +68,11 @@ void WiimoteStreamer::connected(int id, wiimote_t *wm, DeviceType type)
     }
 
     wiiuse_motion_sensing(wm, 1);
+    if (mOptions.isIrEnabled) {
+        // Blocks this device's thread for ~100 ms (wiiuse waits for the camera's register writes).
+        wiiuse_set_ir_sensitivity(wm, mOptions.irSensitivity);
+        wiiuse_set_ir(wm, 1);
+    }
     if (mOptions.isGyroEnabled && WIIMOTE_IS_SET(wm, WIIMOTE_STATE_MPLUS_PRESENT)) {
         // The gyro calibrates on its first reading, so the remote should lie still.
         std::printf("[%d] enabling MotionPlus, keep the remote still\n", id);
@@ -119,9 +125,26 @@ void WiimoteStreamer::updateWiimote(int id, wiimote_t *wm, bool isSendingContinu
         for (const ButtonName &button : sChuckButtons)
             sendInt(id, button.path, (nunchuk.btns & button.mask) ? 1 : 0);
     }
+    const ir_t &ir = wm->ir;
+    if (mOptions.isIrEnabled)
+        sendInt(id, "mote/ir/count", ir.num_dots); // immediately, like buttons: it says which positions are valid
 
     if (!isSendingContinuous)
         return;
+
+    // Positions are only sent while valid: without any visible source, wiiuse reports 0,0.
+    if (mOptions.isIrEnabled && ir.num_dots > 0) {
+        // The pointer, as wiiuse computes it from the visible sources (roll-corrected, estimated from one source
+        // when the other of a sensor bar's pair is lost), on its virtual screen (ir.vres, 560x420 by default).
+        // Both it and the dots are mapped to -1..1 with y up, like the other xy values.
+        sendFloats(id, "mote/ir/xy", {2.0f * ir.x / ir.vres[0] - 1.0f, 1.0f - 2.0f * ir.y / ir.vres[1]});
+        for (int i = 0; i < 4; ++i) {
+            // Raw camera positions (1024x768), not roll-corrected: for any arrangement of IR sources.
+            const ir_dot_t &dot = ir.dot[i];
+            if (dot.visible)
+                sendFloats(id, sIrDotPaths[i], {2.0f * dot.rx / 1023.0f - 1.0f, 1.0f - 2.0f * dot.ry / 767.0f});
+        }
+    }
 
     sendFloats(id, "mote/rpy", {wm->orient.roll, wm->orient.pitch, wm->orient.yaw});
     sendFloats(id, "mote/accel", {wm->gforce.x, wm->gforce.y, wm->gforce.z});

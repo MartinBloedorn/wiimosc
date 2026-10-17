@@ -24,6 +24,8 @@ public:
         int maxRate = 0;          //!< per device, in Hz; 0 is unlimited
         bool isGyroEnabled = false; //!< activates the MotionPlus on supporting remotes (hides a Nunchuk)
         bool isTaring = false;    //!< zeroes the Balance Board's sensors after connecting
+        bool isIrEnabled = false; //!< activates the IR camera, and streams the IR sources it sees
+        int irSensitivity = 3;    //!< IR camera sensitivity, 1 (least) to 5 (most); wiiuse's default is 3
     };
 
     WiimoteStreamer(OscSender &sender, const Options &options);

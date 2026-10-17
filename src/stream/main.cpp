@@ -36,6 +36,9 @@ void printUsage()
                 "  --max-rate <hz>    max. rate of continuous values per device, 0 = unlimited (default 0)\n"
                 "  --gyro             enable the MotionPlus gyro on supporting remotes (hides a Nunchuk)\n"
                 "  --tare             zero the Balance Board after connecting (keep it empty)\n"
+                "  --ir               enable the IR camera, and stream the IR sources it sees\n"
+                "  --ir-sensitivity <1-5>\n"
+                "                     IR camera sensitivity (default 3)\n"
                 "  --one-two          pair remotes held at 1+2 instead of SYNC\n"
                 "  --no-auth          skip authentication when pairing\n"
                 "  --shutdown-on-exit switch off all connected devices when quitting\n"
@@ -73,6 +76,14 @@ int main(int argc, char **argv)
             options.isGyroEnabled = true;
         } else if (std::strcmp(argv[i], "--tare") == 0) {
             options.isTaring = true;
+        } else if (std::strcmp(argv[i], "--ir") == 0) {
+            options.isIrEnabled = true;
+        } else if (std::strcmp(argv[i], "--ir-sensitivity") == 0 && hasValue) {
+            options.irSensitivity = std::atoi(argv[++i]);
+            if (options.irSensitivity < 1 || options.irSensitivity > 5) {
+                printUsage();
+                return 1;
+            }
         } else if (std::strcmp(argv[i], "--one-two") == 0) {
             method = WiimotePairer::Method::OneTwo;
         } else if (std::strcmp(argv[i], "--idle-timeout") == 0 && hasValue) {

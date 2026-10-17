@@ -14,6 +14,8 @@ wiimosc-stream --host 127.0.0.1 --port 4321 --prefix wiimosc [--max-rate 60] [--
 | `--max-rate` | `0` | Max. rate (Hz) of continuous values per device; `0` = unlimited. Buttons and status messages are never limited. |
 | `--gyro` | off | Activates the MotionPlus on Wiimote Plus remotes and streams `mote/gyro`. A Nunchuk on such a remote is then not read. |
 | `--tare` | off | Zeroes the Balance Board after connecting: averages its sensors for 1 s, keep it empty. |
+| `--ir` | off | Activates the Wiimotes' IR cameras, and streams the IR sources they see (`mote/ir/...`). |
+| `--ir-sensitivity <1-5>` | `3` | IR camera sensitivity (wiiuse's presets; 5 picks up the faintest sources) |
 | `--one-two`, `--no-auth` | | Pairing method, as for `wiimosc-pair` |
 | `--id <id>=<address>` | | Always gives the device with this Bluetooth address this id (0–7). Repeatable; also available in `wiimosc-pair`. |
 | `--shutdown-on-exit` | off | Switches off all connected devices when quitting (receivers get `status none` for each). See [Pairing](Pairing.md#shutting-devices-down). |
@@ -44,6 +46,9 @@ wiimosc-stream --id 0=B8:AE:6E:56:1B:BD --id 1=8C:CD:E8:C4:D5:0F --id 2=00:1F:C5
 | `<p>/mote/rpy` | 3 floats, degrees: roll, pitch, yaw | continuous |
 | `<p>/mote/accel` | 3 floats, g: x, y, z | continuous |
 | `<p>/mote/gyro` | 3 floats, deg/s: roll, pitch, yaw rates | continuous, only with `--gyro` on a Wiimote Plus |
+| `<p>/mote/ir/count` | int 0–4 | only with `--ir`; on change: number of IR sources the camera sees |
+| `<p>/mote/ir/xy` | 2 floats, −1–1 | only with `--ir`; continuous while `count` > 0: pointer position computed by wiiuse (x right, y up) |
+| `<p>/mote/ir/dot/{0,1,2,3}` | 2 floats, −1–1 | only with `--ir`; continuous while that source is visible: its raw camera position |
 | `<p>/chuck/status` | int 0/1 | on connect, and when a Nunchuk is plugged in or out |
 | `<p>/chuck/button/{c,z}` | int 0/1 | on change, while a Nunchuk is plugged in |
 | `<p>/chuck/xy` | 2 floats, −1–1 | continuous, stick position |
@@ -58,7 +63,14 @@ wiimosc-stream --id 0=B8:AE:6E:56:1B:BD --id 1=8C:CD:E8:C4:D5:0F --id 2=00:1F:C5
 
 ## Notes & caveats
 
-- **Yaw** in `mote/rpy` and `chuck/rpy` is always 0. The accelerometers only sense gravity, so they can't measure yaw. Roll and pitch are only reliable while the device isn't accelerating. wiiuse smooths them (`WIIUSE_SMOOTHING`).
+- **IR** (`--ir`): the camera tracks up to 4 IR sources (a sensor bar has two, at each end).
+  - **Positions are only sent while valid:** without visible sources, wiiuse reports 0,0. Use `mote/ir/count`, which is sent before the positions, to tell whether `xy` is current.
+  - **`mote/ir/dot/N`:** the camera's raw position of source N (1024×768, mapped to −1..1 with y flipped; not roll-corrected). It works for any arrangement of sources. Slot numbers are the camera's own, so a source can move to another slot when sources appear or vanish.
+  - **`mote/ir/xy`:** wiiuse's pointer, meant for a sensor bar. It's the roll-corrected average of the visible sources; when one source of a pair is lost, it's estimated from the other. It's scaled to wiiuse's 4:3 virtual screen (sensor bar "above"), and keeps its last value when the pointer leaves that screen.
+  - Both use the same orientation. Whether x grows when pointing right hasn't been confirmed on hardware yet.
+  - **Yaw:** while sources are visible, wiiuse also computes the yaw in `mote/rpy` from them.
+  - Enabling the camera blocks that remote's thread for ~100 ms when it connects. With IR on, reports carry IR data, in the basic format with an expansion attached and the extended format without.
+- **Yaw** in `mote/rpy` and `chuck/rpy` is 0 without `--ir`. The accelerometers only sense gravity, so they can't measure yaw. Roll and pitch are only reliable while the device isn't accelerating. wiiuse smooths them (`WIIUSE_SMOOTHING`).
 - **Gyro**: wiiuse calibrates the MotionPlus on its first reading, so the remote should lie still for a moment after connecting with `--gyro`. Even then, a resting remote can show a small constant rate on one axis (e.g. 0.8–5.8 deg/s roll was observed), which a future sensor fusion step would have to estimate and remove. wiiuse doesn't integrate the rates into an orientation. Enabling the MotionPlus blocks that device's thread for ~0.5 s.
 - **MotionPlus vs. Nunchuk**: the MotionPlus and a Nunchuk share the expansion port. wiiuse's pass-through mode (both at once) never reads the Nunchuk's calibration, so stick and acceleration values would be off. Switching modes on plug/unplug stalls all devices for ~1 s. Hence `--gyro` is opt-in: without it, Nunchuks work everywhere. Revisit when implementing sensor fusion.
 - **Balance Board values** are clamped at 0 kg per sensor by wiiuse (`do_interpolate`), so an empty board reads exactly 0. `--tare` can therefore only remove positive offsets.
@@ -88,4 +100,5 @@ wiimosc-stream --id 0=B8:AE:6E:56:1B:BD --id 1=8C:CD:E8:C4:D5:0F --id 2=00:1F:C5
 | 0-based ids, `fit/corner/*` (empty board → 0) | ✅ received |
 | `--id` mapping, reserved ids, shutdown summary, argument validation | ✅ tested with 2 remotes + board (both tools) |
 | `--idle-timeout` (resting remote + empty board), `status none` on idle shutdown | ✅ both shut down after the timeout; `status none` received |
+| `--ir`: count, xy, dots, orientation, yaw | ⏳ builds; not yet run on hardware |
 | Button changes, board under load, `--max-rate`, broadcast, reconnect while streaming, Nunchuk plug/unplug | ⏳ not yet confirmed |
