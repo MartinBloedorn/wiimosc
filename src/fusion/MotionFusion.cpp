@@ -48,14 +48,25 @@ void MotionFusion::setCalibration(const MotionPlusCalibration &calibration)
     restart();
 }
 
+void MotionFusion::setIrAnchors(const std::vector<IrAnchor> &anchors)
+{
+    if (anchors.empty())
+        mIrCorrection.reset();
+    else
+        mIrCorrection = std::make_unique<IrAnchorCorrection>(anchors);
+}
+
 void MotionFusion::restart()
 {
     mIsReady = false;
     mHasTime = false;
     mWindowCount = 0;
+    if (mIrCorrection)
+        mIrCorrection->restart();
 }
 
-void MotionFusion::addReport(double time, const uint16_t rawGyro[3], const bool isSlow[3], const Vector3 &accel)
+void MotionFusion::addReport(double time, const uint16_t rawGyro[3], const bool isSlow[3], const Vector3 &accel,
+                             const IrFrame *ir)
 {
     if (!mFilter)
         return;
@@ -77,13 +88,21 @@ void MotionFusion::addReport(double time, const uint16_t rawGyro[3], const bool 
     sample.dt = std::clamp(dt, 0.0f, sMaxDt);
     sample.gyro = gyro;
     sample.accel = accel;
-    if (sample.dt > 0.0f)
-        mFilter->update(sample);
+    if (sample.dt <= 0.0f)
+        return;
+    mFilter->update(sample);
+
+    if (mIrCorrection && ir) {
+        const Vector3 rate{gyro.x - mSetup.gyroBias.x, gyro.y - mSetup.gyroBias.y, gyro.z - mSetup.gyroBias.z};
+        mIrCorrection->update(sample.dt, mFilter->orientation(), magnitude(rate), *ir);
+    }
 }
 
 Quaternion MotionFusion::orientation() const
 {
-    return mIsReady ? mFilter->orientation() : Quaternion{};
+    if (!mIsReady)
+        return Quaternion{};
+    return mIrCorrection ? mIrCorrection->correct(mFilter->orientation()) : mFilter->orientation();
 }
 
 bool MotionFusion::collectRest(double time, const Vector3 &gyro, const Vector3 &accel)

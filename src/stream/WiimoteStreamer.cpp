@@ -48,6 +48,8 @@ WiimoteStreamer::WiimoteStreamer(OscSender &sender, const Options &options)
     : mSender(sender)
     , mOptions(options)
 {
+    if (mOptions.isIrEnabled && mOptions.fusion != FilterType::None && mOptions.irAnchors.empty())
+        mOptions.irAnchors.push_back(IrAnchor{});
 }
 
 void WiimoteStreamer::connected(int id, wiimote_t *wm, DeviceType type)
@@ -79,9 +81,11 @@ void WiimoteStreamer::connected(int id, wiimote_t *wm, DeviceType type)
     }
     const bool hasMotionPlus = WIIMOTE_IS_SET(wm, WIIMOTE_STATE_MPLUS_PRESENT);
     if (mOptions.fusion != FilterType::None) {
-        if (hasMotionPlus)
+        if (hasMotionPlus) {
             device.fusion = std::make_unique<MotionFusion>(mOptions.fusion);
-        else
+            if (mOptions.isIrEnabled)
+                device.fusion->setIrAnchors(mOptions.irAnchors);
+        } else
             std::printf("[%d] no MotionPlus, no sensor fusion: wiiuse's mote/rpy\n", id);
     }
     if ((mOptions.isGyroEnabled || device.fusion) && hasMotionPlus) {
@@ -139,13 +143,26 @@ void WiimoteStreamer::updateFusion(int id, wiimote_t *wm)
     const bool isSlow[3] = {(mp.acc_mode & 0x02) != 0, (mp.acc_mode & 0x04) != 0, (mp.acc_mode & 0x01) != 0};
     const double time = std::chrono::duration<double>(Clock::now().time_since_epoch()).count();
 
+    IrFrame ir;
+    for (const ir_dot_t &dot : wm->ir.dot) {
+        if (dot.visible)
+            ir.dots[ir.count++] = IrFrame::Dot{static_cast<float>(dot.rx), static_cast<float>(dot.ry)};
+    }
+
     const bool wasReady = device.fusion->isReady();
-    device.fusion->addReport(time, rawGyro, isSlow, Vector3{wm->gforce.x, wm->gforce.y, wm->gforce.z});
+    device.fusion->addReport(time, rawGyro, isSlow, Vector3{wm->gforce.x, wm->gforce.y, wm->gforce.z},
+                             mOptions.isIrEnabled ? &ir : nullptr);
     if (!wasReady && device.fusion->isReady()) {
         const FilterSetup &setup = device.fusion->setup();
-        std::printf("[%d] fusion: ready (gyro bias %.2f, %.2f, %.2f deg/s; %.0f reports/s)\n", id, setup.gyroBias.x,
-                    setup.gyroBias.y, setup.gyroBias.z, setup.sampleRate);
+        std::printf("[%d] fusion: ready (gyro bias %.2f, %.2f, %.2f deg/s; %.0f reports/s)%s\n", id,
+                    setup.gyroBias.x, setup.gyroBias.y, setup.gyroBias.z, setup.sampleRate,
+                    device.fusion->irCorrection() ? "; point at the home anchor to sync the yaw" : "");
     }
+    const IrAnchorCorrection *correction = device.fusion->irCorrection();
+    const bool isSynced = correction && correction->isSynced();
+    if (isSynced && !device.isIrSynced)
+        std::printf("[%d] fusion: yaw synced to the home anchor\n", id);
+    device.isIrSynced = isSynced;
 }
 
 void WiimoteStreamer::update(int id, wiimote_t *wm)
@@ -184,6 +201,9 @@ void WiimoteStreamer::updateWiimote(int id, wiimote_t *wm, bool isSendingContinu
     const ir_t &ir = wm->ir;
     if (mOptions.isIrEnabled)
         sendInt(id, "mote/ir/count", ir.num_dots); // immediately, like buttons: it says which positions are valid
+    const MotionFusion *fusion = mDevices[id].fusion.get();
+    if (fusion && fusion->isReady() && fusion->irCorrection())
+        sendInt(id, "mote/ir/anchor", fusion->irCorrection()->anchorInView());
 
     if (!isSendingContinuous)
         return;
@@ -192,8 +212,11 @@ void WiimoteStreamer::updateWiimote(int id, wiimote_t *wm, bool isSendingContinu
     if (mOptions.isIrEnabled && ir.num_dots > 0) {
         // The pointer, as wiiuse computes it from the visible sources (roll-corrected, estimated from one source
         // when the other of a sensor bar's pair is lost), on its virtual screen (ir.vres, 560x420 by default).
-        // Both it and the dots are mapped to -1..1 with y up, like the other xy values.
-        sendFloats(id, "mote/ir/xy", {2.0f * ir.x / ir.vres[0] - 1.0f, 1.0f - 2.0f * ir.y / ir.vres[1]});
+        // Both it and the dots are mapped to -1..1 with y up, like the other xy values. z is wiiuse's distance
+        // measure, 1023 minus the pixels between the first two sources, mapped to 0..1 (larger: farther); 0 until
+        // two sources were seen.
+        sendFloats(id, "mote/ir/xyz",
+                   {2.0f * ir.x / ir.vres[0] - 1.0f, 1.0f - 2.0f * ir.y / ir.vres[1], ir.z / 1023.0f});
         for (int i = 0; i < 4; ++i) {
             // Raw camera positions (1024x768), not roll-corrected: for any arrangement of IR sources.
             const ir_dot_t &dot = ir.dot[i];
@@ -202,7 +225,6 @@ void WiimoteStreamer::updateWiimote(int id, wiimote_t *wm, bool isSendingContinu
         }
     }
 
-    const MotionFusion *fusion = mDevices[id].fusion.get();
     if (!fusion) {
         sendFloats(id, "mote/rpy", {wm->orient.roll, wm->orient.pitch, wm->orient.yaw});
     } else if (fusion->isReady()) {

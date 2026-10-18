@@ -41,3 +41,23 @@ Quaternion tiltFromGravity(const Vector3 &gravity)
     const float sr = std::sin(0.5f * phi);
     return Quaternion{cp * cr, sp * cr, cp * sr, sp * sr};
 }
+
+Quaternion multiply(const Quaternion &a, const Quaternion &b)
+{
+    return Quaternion{a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z, a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+                      a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x, a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w};
+}
+
+Vector3 rotate(const Quaternion &q, const Vector3 &v)
+{
+    // v + 2w (u x v) + 2 u x (u x v), with u the quaternion's vector part.
+    const Vector3 t{2.0f * (q.y * v.z - q.z * v.y), 2.0f * (q.z * v.x - q.x * v.z), 2.0f * (q.x * v.y - q.y * v.x)};
+    return Vector3{v.x + q.w * t.x + (q.y * t.z - q.z * t.y), v.y + q.w * t.y + (q.z * t.x - q.x * t.z),
+                   v.z + q.w * t.z + (q.x * t.y - q.y * t.x)};
+}
+
+Quaternion yawRotation(float degrees)
+{
+    const float half = 0.5f * degrees / sRadToDeg;
+    return Quaternion{std::cos(half), 0.0f, 0.0f, std::sin(half)};
+}

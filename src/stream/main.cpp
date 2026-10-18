@@ -39,7 +39,10 @@ void printUsage()
                 "                     sensor fusion on remotes with a MotionPlus (hides a Nunchuk): fused mote/rpy\n"
                 "                     including yaw, and mote/quat; madg = Madgwick's AHRS (default off)\n"
                 "  --tare             zero the Balance Board after connecting (keep it empty)\n"
-                "  --ir               enable the IR camera, and stream the IR sources it sees\n"
+                "  --ir [anchor=<yaw[:elevation],...>]\n"
+                "                     enable the IR camera, and stream the IR sources it sees. With --fusion, IR\n"
+                "                     anchors correct the yaw: the first is a sensor bar (home), the others single\n"
+                "                     sources, e.g. anchor=0,-60,60:20 (degrees as in mote/rpy; default: home at 0)\n"
                 "  --ir-sensitivity <1-5>\n"
                 "                     IR camera sensitivity (default 3)\n"
                 "  --one-two          pair remotes held at 1+2 instead of SYNC\n"
@@ -86,6 +89,11 @@ int main(int argc, char **argv)
             options.isTaring = true;
         } else if (std::strcmp(argv[i], "--ir") == 0) {
             options.isIrEnabled = true;
+            if (hasValue && std::strncmp(argv[i + 1], "anchor=", 7) == 0
+                && !parseIrAnchors(argv[++i] + 7, &options.irAnchors)) {
+                printUsage();
+                return 1;
+            }
         } else if (std::strcmp(argv[i], "--ir-sensitivity") == 0 && hasValue) {
             options.irSensitivity = std::atoi(argv[++i]);
             if (options.irSensitivity < 1 || options.irSensitivity > 5) {
@@ -109,6 +117,10 @@ int main(int argc, char **argv)
     }
     if (port <= 0 || port > 65535 || options.maxRate < 0 || idleTimeout < 0.0) {
         printUsage();
+        return 1;
+    }
+    if (!options.irAnchors.empty() && options.fusion == FilterType::None) {
+        std::fprintf(stderr, "--ir anchor=... needs --fusion: the anchors correct the fused yaw\n");
         return 1;
     }
     if (host == "0.0.0.0") {

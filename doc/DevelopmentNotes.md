@@ -14,7 +14,8 @@ Last updated: 2026-10-18.
 | `wiimosc-stream` (OSC) | ✅ working: Wiimote buttons/rpy/accel/gyro, Nunchuk, Balance Board (empty board only), battery, status |
 | `wiimosc-speaker` (speaker prototype) | 🧪 streams without errors at ≤ 60 reports/s; sound quality not yet confirmed by ear ([Speaker.md](Speaker.md)) |
 | Linux / macOS | ❌ not implemented; CMake stops with `FATAL_ERROR` on non-Windows |
-| Sensor fusion (`--fusion madg`: fused rpy with yaw, quaternion) | ✅ works on hardware (user-confirmed); gyro scale and accelerometer handling tuned on recordings of both remotes ([Fusion.md](Fusion.md), §6c). IR as yaw reference (EKF) planned |
+| Sensor fusion (`--fusion madg`: fused rpy with yaw, quaternion) | ✅ works on hardware (user-confirmed); gyro scale and accelerometer handling tuned on recordings of both remotes ([Fusion.md](Fusion.md), §6c) |
+| IR anchors (`--ir anchor=...`: yaw correction by IR emitters) | 🧪 camera sign fixed after the first live test, verified on a sensor bar recording; not yet re-tested live (§6c) |
 
 **Development hardware** (user's machine, Windows 10, VS 2022 Community, CMake, Python 3.11):
 
@@ -30,8 +31,9 @@ src/pairing/   WiimotePairer: Bluetooth inquiry + OS-level pairing (WiimotePaire
 src/hub/       WiimoteHub + AbstractHubListener: threads, device pickup, feedback (shared by both tools)
 src/osc/       OscMessage / OscSender: minimal OSC 1.0 encoder + UDP sender (portable)
 src/stream/    wiimosc-stream: WiimoteStreamer (listener → OSC) + CLI
-src/fusion/    MotionFusion (rest calibration → AbstractOrientationFilter), MadgwickFilter, MotionPlusCalibration
-src/record/    wiimosc-record: logs a Wiimote Plus's raw motion data to CSV (optionally rumble-cued steps)
+src/fusion/    MotionFusion (rest calibration → AbstractOrientationFilter), MadgwickFilter, MotionPlusCalibration,
+               IrAnchors (IR anchor yaw correction)
+src/record/    wiimosc-record: logs a Wiimote Plus's raw motion (and IR) data to CSV (optionally rumble-cued steps)
 src/replay/    wiimosc-replay: runs a recording through MotionFusion, prints the orientation as CSV
 data/recordings/  raw motion recordings from real remotes + README (format, content of each)
 src/pairtool/  wiimosc-pair: listener that prints A presses + CLI
@@ -136,11 +138,12 @@ Details are in [Speaker.md](Speaker.md).
 The full reference (design, conventions, measurements, tuning method, open work) is **[Fusion.md](Fusion.md)**. The essentials:
 
 - **`--fusion <madg|off>`** (default off = stock wiiuse behaviour) activates the MotionPlus like `--gyro` (so it hides a Nunchuk), replaces `mote/rpy` with fused angles including yaw, and adds `mote/quat`. Remotes without MotionPlus keep wiiuse's `mote/rpy`; `--gyro` stays independent.
-- **Structure**: `src/fusion` (no wiiuse dependency). `MotionFusion` per remote converts raw values (`MotionPlusCalibration`), measures bias, gravity and report rate during 1 s of rest, then drives an `AbstractOrientationFilter` (`MadgwickFilter`, on xioTechnologies Fusion). An EKF plugs in as another filter; IR measurements would go into `MotionSample`.
+- **Structure**: `src/fusion` (no wiiuse dependency). `MotionFusion` per remote converts raw values (`MotionPlusCalibration`), measures bias, gravity and report rate during 1 s of rest, then drives an `AbstractOrientationFilter` (`MadgwickFilter`, on xioTechnologies Fusion). `IrAnchorCorrection` corrects its yaw. An EKF plugs in as another filter; IR measurements (`IrFrame`) would then go into `MotionSample`.
 - **Gyro sensitivity**: the MotionPlus's stored scales make the gyro over-read by 10–30%. The measured sensitivity, ~20 counts per deg/s on two Wiimote Plus and unrelated to the stored values, replaces them (`sSlowSensitivity = {20.4, 20.4, 20.0}`). Yaw is now within ±1% per 360° turn.
 - **Accelerometer handling**: Fusion's own acceleration rejection is off (it trusted a shaking remote after 5 s, and rejected valid samples at rest). Instead, the accelerometer is used while |a| is within 20% of its rest value, with gain 1.0 while moving and 5.0 at rest: the tilt settles within ~1 s after motion.
 - **Samples** come from `event()` on `WIIUSE_EVENT` (~180 reports/s), with dt measured on the host.
 - **Tuning on recordings**: `wiimosc-record` / `wiimosc-replay` and `data/recordings/`. Use them again for the EKF.
+- **IR anchors** (`--ir [anchor=0,-60,60:20]` with `--fusion`; Fusion.md §10): IR emitters at known yaw (and optional elevation) correct the fused yaw. The first anchor is a sensor bar (home), which can be identified, so it syncs the yaw at startup and recovers it. The others are single sources, matched to the nearest anchor within 20° once synced. `IrAnchorCorrection` keeps a yaw offset on top of the filter's output and nudges it (0.5 s, rate-limited); roll and pitch are never touched. `mote/ir/anchor` reports the anchor in view. There's no separate screen mode: home is where the screen is. `mote/ir/xy` became `mote/ir/xyz` (plus wiiuse's unitless `ir.z`). The first live test showed yaw jumps whenever the bar's second dot came and went: the camera's x (wiiuse's `rx`) grows to the *left*, not the right. Fixed and verified on a recording of sweeps across a bar, which also gave the field of view (39.7°). The simulation had missed it, since it used the code's own camera model: check such assumptions on recordings.
 
 ## 7. Conventions & preferences
 
@@ -163,11 +166,11 @@ The full reference (design, conventions, measurements, tuning method, open work)
 
 ## 9. Open work & known issues
 
-- **Unverified on hardware**: `--ir` (including whether `ir/xy` x grows when pointing right); 1+2 pairing; power-cycling a remote *while streaming*; board under load (weight, corners, xy, tare offsets); button changes over OSC (buttons were verified in `wiimosc-pair`); `--max-rate`; broadcast targets; Nunchuk plug/unplug while streaming; `--gyro` together with a Nunchuk.
+- **Unverified on hardware**: `--ir` streaming over OSC (the camera's axes are measured: x grows when pointing right), and the IR anchors live after the sign fix (Fusion.md §10 lists the checks); 1+2 pairing; power-cycling a remote *while streaming*; board under load (weight, corners, xy, tare offsets); button changes over OSC (buttons were verified in `wiimosc-pair`); `--max-rate`; broadcast targets; Nunchuk plug/unplug while streaming; `--gyro` together with a Nunchuk.
 - **Linux backend**: wiiuse's BlueZ path connects over L2CAP without pairing. For permanent SYNC pairing, BlueZ's `wiimote` plugin supplies the PIN, so pairing could go over D-Bus (`Device1.Pair`, `Trusted`). Check the kernel `hid-wiimote` driver claiming devices. The user couldn't get wiiuse working on Linux before.
 - **macOS backend**: `IOBluetoothDevicePair` + answering `devicePairingPINCodeRequest` with the reversed host address (like dolphin-emu/WiimotePair). It may need a `bluetoothd` restart and TCC permission. wiiuse's own mac discovery is unreliable on recent macOS.
 - The `os_win.c` find/I/O patches are Windows-specific; other backends would need equivalents (re-scan without clobbering, per-device threads).
-- **Sensor fusion**: the user hasn't yet tried the tuned version live. Tilt errors of ~8–14° can still build up during very vigorous motion (accelerometer unusable, gyro saturating); they settle within ~1 s at rest. Next steps (IR/EKF, 10-bit motion recordings, MotionPlus accessory, yaw re-zeroing, Nunchuk pass-through): [Fusion.md §10](Fusion.md#10-open-work).
+- **Sensor fusion**: the user hasn't yet tried the tuned version live. Tilt errors of ~8–14° can still build up during very vigorous motion (accelerometer unusable, gyro saturating); they settle within ~1 s at rest. Next steps (IR anchors on hardware, EKF, 10-bit motion recordings, MotionPlus accessory, yaw re-zeroing, Nunchuk pass-through): [Fusion.md §11](Fusion.md#11-open-work).
 - Without `--id`, a device that reconnects may get a different id (lowest free one).
 - Each paired but switched-off remote adds ~5 s to every pairing scan cycle (presence probe); the probes could run in parallel.
 - Shutdown joins device threads; a thread stuck in a sync read can delay exit by up to ~15 s (3 × 5 s).

@@ -6,7 +6,7 @@ Last updated: 2026-10-18.
 
 ## 1. Goal & status
 
-The user's goal: full Euler angles including yaw at all times, drift accepted. The IR camera is planned as an absolute yaw reference later, likely with an EKF (§10).
+The user's goal: full Euler angles including yaw at all times, drift accepted. The IR camera corrects the yaw with IR anchors, emitters at known directions (§10). An EKF (also for position) is possible later (§11).
 
 | Item | State |
 |---|---|
@@ -14,7 +14,8 @@ The user's goal: full Euler angles including yaw at all times, drift accepted. T
 | Gyro sensitivity correction (§5) | ✅ measured on both Wiimote Plus; yaw within ±1% per 360° turn |
 | Accelerometer gate and rest gain (§6) | ✅ verified offline on recordings from both remotes; not yet tried live by the user |
 | MotionPlus *accessory* (on an older Wiimote) | ❓ not measured |
-| IR as yaw reference (EKF) | ❌ planned |
+| IR anchors as yaw reference (`--ir anchor=...`, §10) | ⏳ first live test showed yaw jumps: camera x sign was wrong, fixed and verified on a sensor bar recording (with field of view); not yet re-tested live; single sources untested |
+| EKF (IR, position) | ❌ not planned for now |
 
 ## 2. Overview
 
@@ -27,17 +28,21 @@ WiimoteStreamer::updateFusion ── once per MotionPlus activation: read calibr
 MotionFusion::addReport
   ├─ MotionPlusCalibration::rates   raw → deg/s about body x, y, z (factory zero/scale, sign fix, sensitivity fix)
   ├─ until ready: collectRest       1 s still → FilterSetup {gyro bias, gravity, report rate, gyro range}
-  └─ then: AbstractOrientationFilter::update(MotionSample {dt, gyro, accel})
-         └─ MadgwickFilter: FusionBias → accelerometer gate / gain → FusionAhrsUpdateNoMagnetometer
+  ├─ then: AbstractOrientationFilter::update(MotionSample {dt, gyro, accel})
+  │      └─ MadgwickFilter: FusionBias → accelerometer gate / gain → FusionAhrsUpdateNoMagnetometer
+  └─ with --ir and anchors: IrAnchorCorrection::update(filter orientation, IrFrame {visible rx/ry})
+         └─ sources → world bearings → home pair / nearest anchor → yaw offset (set or nudged)
   ▼
-orientation() → mote/quat;  toEulerAngles() → mote/rpy   (sent in update(), rate-limited like other values)
+orientation() = Rz(offset) · filter → mote/quat;  toEulerAngles() → mote/rpy   (sent in update(), rate-limited)
+anchorInView() → mote/ir/anchor
 ```
 
 Files (`src/fusion/`, library `motionfusion`, no wiiuse dependency):
 
 | File | Role |
 |---|---|
-| `Orientation.h/.cpp` | `Vector3`, `Quaternion` (body → world), `EulerAngles`; `toEulerAngles()`, `tiltFromGravity()` |
+| `Orientation.h/.cpp` | `Vector3`, `Quaternion` (body → world), `EulerAngles`; `toEulerAngles()`, `tiltFromGravity()`, `multiply()`, `rotate()`, `yawRotation()` |
+| `IrAnchors.h/.cpp` | `IrAnchor` + `parseIrAnchors()`, `IrFrame` (visible sources), `IrAnchorCorrection` (camera model, matching, yaw offset) |
 | `MotionPlusCalibration.h/.cpp` | Parses the 32-byte calibration (CRC-checked), converts raw values to deg/s |
 | `AbstractOrientationFilter.h` | Filter interface; `MotionSample` (per report) and `FilterSetup` (start state) |
 | `MadgwickFilter.h/.cpp` | Fusion's AHRS plus our accelerometer handling; the only file that includes Fusion |
@@ -162,13 +167,80 @@ Before the scale fix, every variant showed ~8° mean disagreement during *slow* 
 
 ## 9. Earlier verification
 
-- **Simulation** (before hardware): a simulated remote with bias 1.5 / −2.5 / 3 deg/s and raw values encoded with the nominal calibration (yaw 90°, pitch 45°, roll 30°, a 600 deg/s spin, 80 s rest) tracked within ~1°, with the bias estimated within 0.03 deg/s. This verified internal consistency, i.e. Euler/tilt round trips, signs within the pipeline, and fast mode, but not the hardware assumptions.
+- **Simulation** (before hardware; IR anchors: §10): a simulated remote with bias 1.5 / −2.5 / 3 deg/s and raw values encoded with the nominal calibration (yaw 90°, pitch 45°, roll 30°, a 600 deg/s spin, 80 s rest) tracked within ~1°, with the bias estimated within 0.03 deg/s. This verified internal consistency, i.e. Euler/tilt round trips, signs within the pipeline, and fast mode, but not the hardware assumptions.
 - **CRC**: our CRC-32 matches the standard check value (`"123456789"` → `CBF43926`), and a corrupted block is rejected.
 - **Rest, 4 min** (remote 1, 8-bit): fused roll/pitch equal to the accelerometer within 0.03°, yaw 0.25° in 4 min.
 
-## 10. Open work
+## 10. IR anchors
 
-- **IR as yaw reference** (EKF): add a class implementing `AbstractOrientationFilter`, a `FilterType` value and its name in `parseFilterType`, and IR measurements in `MotionSample` (filters use what they support). An EKF can estimate the gyro bias (and per-axis scale) as states, starting from `FilterSetup::gyroBias`. Compare it against Madgwick with `wiimosc-replay` on `data/recordings/`. That needs recordings with IR data, so extend `wiimosc-record`. wiiuse's own IR yaw (`calc_yaw`, written to `orient.yaw`) is ignored when fusion is on.
+**Goal** (the user's): let one remote operate many elements in a room, over a wide range of yaw, by correcting the drifting yaw with IR emitters at known directions. Going further, i.e. estimating the remote's *position* from IR (a kind of mocap), was deliberately left out as too complex for now.
+
+**Decisions** (discussed with the user, 2026-10-18):
+
+- **No separate "screen" mode.** A sensor bar is just the **home anchor**, and that's where a screen would be. `mote/ir/xyz` (wiiuse's pointer) is streamed as before, whatever the anchors are.
+- **The home anchor is a pair** of sources (a sensor bar), and the first entry of `anchor=`. Single sources all look alike, so they can only be told apart by direction. That fails at startup (the yaw is arbitrary), and once the yaw is more than half an anchor spacing off: it would then lock onto the wrong anchor and hold there. The pair is identifiable, so it syncs the yaw at startup and recovers it later. All other anchors are single sources.
+- **Correct the fused output, don't replace it.** The anchors keep a yaw offset on top of the filter. The yaw is then already right when the anchors leave the view, so there's no visible handover, and no separate "IR yaw" to switch to.
+- **Elevation is optional, and only for matching** (rejecting sources at other heights, telling apart anchors at the same yaw). It never corrects pitch or roll: gravity holds those to a fraction of a degree, while an emitter's apparent elevation depends on the user's height and distance (0.5 m at 4 m is ~7°).
+- **`mote/ir/anchor`** reports the anchor in view: needed for the correction anyway, and useful by itself ("pointing at element 2").
+- **`mote/ir/xy` became `mote/ir/xyz`**, adding wiiuse's unitless distance measure `ir.z` (1023 minus the pixel distance between the first two sources; divided by 1023 here). The user's choice, since x and y are unitless too. A metric distance would need the camera's field of view and the bar's spacing (later, if needed).
+
+**CLI**: `--ir [anchor=yaw[:elevation],...]`. With `--fusion` and no `anchor=`, the home anchor alone, at 0. `anchor=` without `--fusion` is an error. Replay: `wiimosc-replay <file> --ir-anchors <list>`, on recordings made with `wiimosc-record --ir`.
+
+**Camera model** (`bearingOf` in `IrAnchors.cpp`): a pinhole camera looking along the body's y axis, with square pixels, the center at (511.5, 383.5), and a focal length from a **40° horizontal field of view** (measured, below). A source at (rx, ry) has the body direction (−(rx − 511.5)/f, 1, −(ry − 383.5)/f), which the full orientation (with the current offset) turns into a world direction. Its yaw is `atan2(−x, y)` and its elevation `asin(z)`, the same as `toEulerAngles()` gives for the body's y axis. So pointing straight at an anchor reads its yaw and elevation in `mote/rpy`.
+
+**Measured** (`2026-10-18-irbar-sweep-10bit.csv`, remote 2, sweeps, rolls and pitches across a sensor bar):
+
+- **rx grows to the left** (as seen from behind the remote), despite wiiuse's `1023 − raw`, and ry grows downwards. The first version assumed rx grows to the right. A bar off-centre in the image was then measured on the wrong side, by twice its distance from the centre. While sweeping, that pulled the yaw away from the gyro and reset it whenever it got more than 15° off: **the yaw jumped whenever the bar's second dot came and went** (the user's observation). Replayed, that's 57 resets with steps up to 25° in 70 s. After the fix, there's 1 (the initial sync), and the largest step is 0.18° per report.
+- **The sign was found by testing all four combinations.** For each one, the bar's world direction (from the uncorrected fusion) should stay constant while the remote moves. Spread in 2 s windows: 1.4° yaw / 0.6° elevation with the measured signs, ~10° yaw with rx the other way, 6–7° elevation with ry the other way.
+- **Field of view**: the bar moves 24.7 px per degree of gyro yaw during slow sweeps, i.e. f ≈ 1417 px, 39.7°. In the sign test, 37–43° are all close (the best is at 40°).
+- The camera never reported more than two sources from the bar (6682 reports with two, 1082 with one).
+- The simulation couldn't catch the sign error: its generator used the same camera model as the code.
+
+**Matching** (`IrAnchorCorrection::update`, per report):
+
+1. **Home pair**: two sources at most 25° apart (a 20 cm bar from 45 cm), and roughly horizontal (vertical separation at most 0.35 × horizontal), whose center matches home's elevation if given. Single anchors are farther apart than the camera's view, so two sources that close can't be two of them. The pair's center is the measurement.
+   - **Sync**: the first time (or with the yaw more than 15° off), the offset is set, so that the pair's center is at home's yaw. This needs the pair in 3 reports in a row, against brief false pairs.
+   - Otherwise, the offset is nudged.
+2. **Single sources** (only once synced): each is taken for the nearest anchor within 20° in yaw (and 15° in elevation, if given). The best fit is used. A lone source near home is half of the pair (the other is out of view): `anchorInView` is home, but it's off by half the pair's span, so it doesn't correct.
+
+**Nudging** (`nudge`): offset += residual × dt / 0.5 s, limited to (2 deg/s + 0.2 × turning rate) × dt. A correction is hard to notice while the remote turns, and easy while it points at something, hence the turning share. A constant drift leaves a small lag behind the anchor (drift × 0.5 s, e.g. 0.25° at 0.5 deg/s).
+
+**Why not inside the filter**: Fusion could take the IR heading as a fake magnetometer, but that ties the correction to the accelerometer gain, which switches between moving and resting (§6). An EKF could also estimate the yaw gyro's bias, but bearings to one source at a time add little to that. The offset works with any filter. A future filter that uses IR itself (with `IrFrame` in `MotionSample`) would just skip it.
+
+| Constant (`IrAnchors.cpp`) | Value | Role |
+|---|---|---|
+| `sFieldOfView` | 40° | camera's horizontal field of view (39.7° measured) |
+| `sMaxPairSpan`, `sMaxPairSlope` | 25°, 0.35 | what counts as a home pair |
+| `sResyncThreshold`, `sResyncReports` | 15°, 3 | when home resets the offset |
+| `sYawGate`, `sElevationGate` | 20°, 15° | how near a single source must be to an anchor |
+| `sTimeConstant` | 0.5 s | nudge speed |
+| `sStillCorrectionRate`, `sMovingCorrectionShare` | 2 deg/s, 0.2 | nudge limit |
+
+**Verified in simulation** (a scratch generator wrote a `wiimosc-record` CSV with IR from a known trajectory, replayed with `--ir-anchors 0,60,-60:15`). It used the same camera model as the code, so this checks the logic, not the hardware assumptions. Setup: the gyro over-reads by 3%, plus an uncalibrated yaw bias of 0.5 deg/s from 4 s; roll ±25° and pitch ±8° throughout; 95 s of turns between the anchors, including 12 s at 150° and a full turn with nothing in view.
+
+- The yaw starts 30° off (startup heading), and syncs as soon as the bar comes into view.
+- With any anchor in view, the yaw error is 0.2–0.3°, including at roll 25°, and including the anchor with an elevation.
+- Away from the anchors, it drifts with the simulated gyro error (up to ~9° after 12 s), and returns to < 1° within ~1 s of an anchor coming into view.
+- Roll and pitch are unaffected. Without anchors, the same data drifts to 31° (RMS 15°).
+
+**Limits**:
+
+- **Position**: an anchor's yaw is only exact from where it was measured. 0.5 m sideways at 4 m shifts it by ~7°: a constant error per anchor, which shows as a small shift when moving from one anchor to the next.
+- **Wrong anchors**: if the yaw drifts more than 20° away from home before a single source comes into view, that source is ignored, or taken for the wrong anchor if another is within 20°. Seeing home fixes it. Anchors should be more than 40° apart.
+- **False sources** (sunlight, lamps, reflections) are only rejected by the gates: one near an anchor's direction pulls the yaw. Elevations help.
+- The camera's range with a single LED is much shorter than with a sensor bar's cluster (not yet measured).
+
+**Hardware checks**:
+
+1. ✅ **Axes** and 2. ✅ **field of view**: measured on the sensor bar recording (above).
+3. **Live test** of `--ir anchor=0` after the sign fix (the user saw the jumps before it).
+4. **Single sources**: matching and correction with a real single emitter, and its range (the largest distance at which it's still seen, per `--ir-sensitivity`).
+
+## 11. Open work
+
+- **IR anchors on hardware**: the remaining checks in §10, then tuning the gates and the nudge on recordings. The bar's direction still varies by ~1.4° (yaw) during large rolls; a small camera mounting tilt or principal point offset could account for it, fittable from the same recording if it matters.
+- **EKF**: add a class implementing `AbstractOrientationFilter`, a `FilterType` value and its name in `parseFilterType`, and `IrFrame` in `MotionSample` (filters use what they support). An EKF can estimate the gyro bias (and per-axis scale) as states, starting from `FilterSetup::gyroBias`. With the gyro, it can tell turning from moving sideways, so the bar's position becomes observable. Compare it against Madgwick with `wiimosc-replay` on `data/recordings/`. wiiuse's own IR yaw (`calc_yaw`, written to `orient.yaw`) is ignored when fusion is on.
+- **Metric distance** to the sensor bar: spacing / (2 tan(Δθ/2)) from the angle between its sources. It needs the field of view, and reads farther when viewed from the side (cosine of the angle).
 - New motion recordings with `WITH_ACCEL_10BIT` (the motion recordings so far are 8-bit), to re-check the gate and gains with the finer accelerometer.
 - A MotionPlus accessory on an older Wiimote: measure its sensitivity (one 360° table turn).
 - Re-zeroing yaw (a button or an OSC message).

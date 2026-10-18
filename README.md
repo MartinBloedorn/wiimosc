@@ -43,7 +43,7 @@ This streams every device's input to the OSC target, for example:
 /wiimosc/1/fit/xy          0.05 -0.21
 ```
 
-Further options: `--max-rate <hz>`, `--gyro` (MotionPlus), `--fusion madg` (sensor fusion on Wiimote Plus remotes: orientation including yaw, and a quaternion), `--ir` (IR camera: pointer and IR source positions), `--tare` (Balance Board), broadcast targets, and fixed ids per controller (`--id 0=B8:AE:6E:56:1B:BD`, also in `wiimosc-pair`; on Ctrl+C, both tools print the `--id` arguments for the connected controllers, ready to paste). See [doc/Streaming.md](doc/Streaming.md) for all addresses and options. To check the output without other software: `python tools/oscdump.py 4321 20`.
+Further options: `--max-rate <hz>`, `--gyro` (MotionPlus), `--fusion madg` (sensor fusion on Wiimote Plus remotes: orientation including yaw, and a quaternion), `--ir` (IR camera: pointer and IR source positions; with `--fusion`, `--ir anchor=0,-60,60` corrects the yaw with IR emitters at known directions, a sensor bar first), `--tare` (Balance Board), broadcast targets, and fixed ids per controller (`--id 0=B8:AE:6E:56:1B:BD`, also in `wiimosc-pair`; on Ctrl+C, both tools print the `--id` arguments for the connected controllers, ready to paste). See [doc/Streaming.md](doc/Streaming.md) for all addresses and options. To check the output without other software: `python tools/oscdump.py 4321 20`.
 
 ### `wiimosc-pair`: pairing & testing
 

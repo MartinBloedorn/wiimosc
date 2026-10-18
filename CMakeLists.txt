@@ -28,6 +28,8 @@ add_library(motionfusion STATIC
     src/fusion/AbstractOrientationFilter.h
     src/fusion/MadgwickFilter.h
     src/fusion/MadgwickFilter.cpp
+    src/fusion/IrAnchors.h
+    src/fusion/IrAnchors.cpp
     src/fusion/MotionFusion.h
     src/fusion/MotionFusion.cpp)
 target_include_directories(motionfusion PUBLIC src)

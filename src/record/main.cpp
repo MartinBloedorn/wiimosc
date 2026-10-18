@@ -2,7 +2,8 @@
 
     Format (see data/recordings/README.md): comment lines start with '#': the column header, "#cal" with the
     MotionPlus calibration's 32 bytes, and "#phase <n> <time>" for each cued step. Data rows: time (s, steady clock),
-    raw pitch, roll and yaw gyro values, their slow-mode flags, and the acceleration in g (x, y, z).
+    raw pitch, roll and yaw gyro values, their slow-mode flags, and the acceleration in g (x, y, z). With --ir, also
+    the number of visible IR sources and four x,y pairs (wiiuse's rx/ry; the visible ones first, the rest -1).
  */
 
 #include "fusion/MotionPlusCalibration.h"
@@ -38,10 +39,12 @@ double now()
 class Recorder : public AbstractHubListener
 {
 public:
-    explicit Recorder(FILE *file)
+    Recorder(FILE *file, bool isIrEnabled)
         : mFile(file)
+        , mIsIrEnabled(isIrEnabled)
     {
-        std::fprintf(mFile, "# t,rawPitch,rawRoll,rawYaw,slowPitch,slowRoll,slowYaw,ax,ay,az\n");
+        std::fprintf(mFile, "# t,rawPitch,rawRoll,rawYaw,slowPitch,slowRoll,slowYaw,ax,ay,az%s\n",
+                     isIrEnabled ? ",irCount,ir0x,ir0y,ir1x,ir1y,ir2x,ir2y,ir3x,ir3y" : "");
     }
 
     /*! \brief Records only the device with this id (-1: the first Wiimote Plus). */
@@ -54,6 +57,10 @@ public:
         mId = id;
         std::printf("[%d] recording, enabling MotionPlus\n", id);
         wiiuse_motion_sensing(wm, 1);
+        if (mIsIrEnabled) {
+            wiiuse_set_ir_sensitivity(wm, 3);
+            wiiuse_set_ir(wm, 1);
+        }
         wiiuse_set_motion_plus(wm, 1);
     }
 
@@ -83,10 +90,24 @@ public:
         }
         const motion_plus_t &mp = wm->exp.mp;
         std::lock_guard<std::mutex> lock(mMutex);
-        std::fprintf(mFile, "%.6f,%u,%u,%u,%d,%d,%d,%.5f,%.5f,%.5f\n", now(), static_cast<uint16_t>(mp.raw_gyro.pitch),
+        std::fprintf(mFile, "%.6f,%u,%u,%u,%d,%d,%d,%.5f,%.5f,%.5f", now(), static_cast<uint16_t>(mp.raw_gyro.pitch),
                      static_cast<uint16_t>(mp.raw_gyro.roll), static_cast<uint16_t>(mp.raw_gyro.yaw),
                      (mp.acc_mode & 0x02) != 0, (mp.acc_mode & 0x04) != 0, (mp.acc_mode & 0x01) != 0, wm->gforce.x,
                      wm->gforce.y, wm->gforce.z);
+        if (mIsIrEnabled) {
+            // The visible sources first, the rest as -1.
+            std::fprintf(mFile, ",%d", wm->ir.num_dots);
+            int written = 0;
+            for (const ir_dot_t &dot : wm->ir.dot) {
+                if (dot.visible && written < 4) {
+                    std::fprintf(mFile, ",%d,%d", dot.rx, dot.ry);
+                    ++written;
+                }
+            }
+            for (; written < 4; ++written)
+                std::fprintf(mFile, ",-1,-1");
+        }
+        std::fprintf(mFile, "\n");
         ++mCount;
     }
 
@@ -102,6 +123,7 @@ public:
 
 private:
     FILE *mFile;
+    bool mIsIrEnabled;
     std::mutex mMutex;
     int mRecordedId = -1;
     int mId = -1;
@@ -147,6 +169,7 @@ void printUsage()
                 "  --cues <s,s,...>   cued steps of these durations: two short buzzes start step 0, one short buzz\n"
                 "                     each further step, a long buzz the end; e.g. --cues 6,12,12,15,15\n"
                 "  --address <addr>   record the Wiimote Plus with this Bluetooth address (default: the first one)\n"
+                "  --ir               also record the IR sources the camera sees\n"
                 "Press a button on the remote to connect it.\n");
 }
 
@@ -161,10 +184,13 @@ int main(int argc, char **argv)
     double seconds = 0.0;
     std::vector<double> cues;
     std::string address;
+    bool isIrEnabled = false;
     for (int i = 2; i < argc; ++i) {
         const bool hasValue = i + 1 < argc;
         if (std::strcmp(argv[i], "--seconds") == 0 && hasValue) {
             seconds = std::atof(argv[++i]);
+        } else if (std::strcmp(argv[i], "--ir") == 0) {
+            isIrEnabled = true;
         } else if (std::strcmp(argv[i], "--address") == 0 && hasValue) {
             address = argv[++i];
         } else if (std::strcmp(argv[i], "--cues") == 0 && hasValue) {
@@ -189,7 +215,7 @@ int main(int argc, char **argv)
     std::signal(SIGBREAK, [](int) { sIsRunning = false; });
 #endif
 
-    Recorder recorder(file);
+    Recorder recorder(file, isIrEnabled);
     WiimoteHub hub(&recorder);
     if (!address.empty()) {
         // Id 0 is reserved for that address, so only it can get id 0.

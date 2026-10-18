@@ -4,6 +4,7 @@
 
 ```
 wiimosc-stream --host 127.0.0.1 --port 4321 --prefix wiimosc [--max-rate 60] [--gyro] [--fusion madg] [--tare]
+               [--ir [anchor=0,-60,60]]
 ```
 
 | Option | Default | Meaning |
@@ -15,7 +16,7 @@ wiimosc-stream --host 127.0.0.1 --port 4321 --prefix wiimosc [--max-rate 60] [--
 | `--gyro` | off | Activates the MotionPlus on Wiimote Plus remotes and streams `mote/gyro`. A Nunchuk on such a remote is then not read. |
 | `--fusion <madg\|off>` | `off` | Sensor fusion on Wiimote Plus remotes: activates the MotionPlus (a Nunchuk is then not read), replaces `mote/rpy` with fused angles including yaw, and adds `mote/quat`. `madg` = Madgwick's AHRS ([xioTechnologies Fusion](https://github.com/xioTechnologies/Fusion)). `off` keeps wiiuse's own `mote/rpy`. See [Sensor fusion](#sensor-fusion---fusion). |
 | `--tare` | off | Zeroes the Balance Board after connecting: averages its sensors for 1 s, keep it empty. |
-| `--ir` | off | Activates the Wiimotes' IR cameras, and streams the IR sources they see (`mote/ir/...`). |
+| `--ir [anchor=<yaw[:elevation]>,...]` | off | Activates the Wiimotes' IR cameras, and streams the IR sources they see (`mote/ir/...`). With `--fusion`, IR anchors also correct the fused yaw: the first is a sensor bar (home), the others single IR sources, at the given yaw (and optionally elevation), in degrees as in `mote/rpy`. Without `anchor=`, there's just the home anchor, at yaw 0. `anchor=` without `--fusion` is an error. See [IR anchors](#ir-anchors---ir-anchor). |
 | `--ir-sensitivity <1-5>` | `3` | IR camera sensitivity (wiiuse's presets; 5 picks up the faintest sources) |
 | `--one-two`, `--no-auth` | | Pairing method, as for `wiimosc-pair` |
 | `--id <id>=<address>` | | Always gives the device with this Bluetooth address this id (0–7). Repeatable; also available in `wiimosc-pair`. |
@@ -45,11 +46,12 @@ wiimosc-stream --id 0=B8:AE:6E:56:1B:BD --id 1=8C:CD:E8:C4:D5:0F --id 2=00:1F:C5
 | `<p>/battery` | float 0–1 | on connect, then every 10 s |
 | `<p>/mote/button/{a,b,1,2,plus,minus,home,up,down,left,right}` | int 0/1 | on change |
 | `<p>/mote/rpy` | 3 floats, degrees: roll, pitch, yaw | continuous. With `--fusion` on a Wiimote Plus: fused, and only once the fusion is ready |
-| `<p>/mote/quat` | 4 floats: w, x, y, z | only with `--fusion` on a Wiimote Plus; continuous once ready: orientation, body → world (z up) |
+| `<p>/mote/quat` | 4 floats: w, x, y, z | only with `--fusion` on a Wiimote Plus; continuous once ready: orientation, body → world (z up). Free of gimbal lock, and corrected by the IR anchors like `mote/rpy` (both come from the same quaternion) |
 | `<p>/mote/accel` | 3 floats, g: x, y, z | continuous. Resolution ~0.01 g on x, ~0.02 g on y and z (the accelerometer's full 10/9/9 bits) |
 | `<p>/mote/gyro` | 3 floats, deg/s: roll, pitch, yaw rates | continuous, only with `--gyro` on a Wiimote Plus |
 | `<p>/mote/ir/count` | int 0–4 | only with `--ir`; on change: number of IR sources the camera sees |
-| `<p>/mote/ir/xy` | 2 floats, −1–1 | only with `--ir`; continuous while `count` > 0: pointer position computed by wiiuse (x right, y up) |
+| `<p>/mote/ir/xyz` | 3 floats: x, y −1–1, z 0–1 | only with `--ir`; continuous while `count` > 0: pointer position computed by wiiuse (x right, y up), and wiiuse's distance measure z (larger: farther; 0 until two sources were seen) |
+| `<p>/mote/ir/anchor` | int −1, 0, 1, ... | only with `--ir` and `--fusion` on a Wiimote Plus, once the fusion is ready; on change: the IR anchor in view (its index in `anchor=`, 0 = home), −1 for none |
 | `<p>/mote/ir/dot/{0,1,2,3}` | 2 floats, −1–1 | only with `--ir`; continuous while that source is visible: its raw camera position |
 | `<p>/chuck/status` | int 0/1 | on connect, and when a Nunchuk is plugged in or out |
 | `<p>/chuck/button/{c,z}` | int 0/1 | on change, while a Nunchuk is plugged in |
@@ -66,10 +68,10 @@ wiimosc-stream --id 0=B8:AE:6E:56:1B:BD --id 1=8C:CD:E8:C4:D5:0F --id 2=00:1F:C5
 ## Notes & caveats
 
 - **IR** (`--ir`): the camera tracks up to 4 IR sources (a sensor bar has two, at each end).
-  - **Positions are only sent while valid:** without visible sources, wiiuse reports 0,0. Use `mote/ir/count`, which is sent before the positions, to tell whether `xy` is current.
+  - **Positions are only sent while valid:** without visible sources, wiiuse reports 0,0. Use `mote/ir/count`, which is sent before the positions, to tell whether `xyz` is current.
   - **`mote/ir/dot/N`:** the camera's raw position of source N (1024×768, mapped to −1..1 with y flipped; not roll-corrected). It works for any arrangement of sources. Slot numbers are the camera's own, so a source can move to another slot when sources appear or vanish.
-  - **`mote/ir/xy`:** wiiuse's pointer, meant for a sensor bar. It's the roll-corrected average of the visible sources; when one source of a pair is lost, it's estimated from the other. It's scaled to wiiuse's 4:3 virtual screen (sensor bar "above"), and keeps its last value when the pointer leaves that screen.
-  - Both use the same orientation. Whether x grows when pointing right hasn't been confirmed on hardware yet.
+  - **`mote/ir/xyz`:** wiiuse's pointer, meant for a sensor bar. x, y are the roll-corrected average of the visible sources; when one source of a pair is lost, they're estimated from the other. They're scaled to wiiuse's 4:3 virtual screen (sensor bar "above"), and keep their last value when the pointer leaves that screen. z is wiiuse's `ir.z`, 1023 minus the pixel distance between the first two sources, divided by 1023: it grows with the distance to the bar, but isn't proportional to it, and isn't in metres. It keeps its last value while one source of the pair is visible, and is 0 until two sources were seen. (This address was `mote/ir/xy`, with x and y only, until 2026-10-18.)
+  - Both use the same orientation: x grows when the remote points further right (the sources then appear further left, as wiiuse's raw x grows to the left; measured on a recording, see [Fusion.md §10](Fusion.md#10-ir-anchors)), y when it points further up.
   - **Yaw:** while sources are visible, wiiuse also computes the yaw in `mote/rpy` from them.
   - Enabling the camera blocks that remote's thread for ~100 ms when it connects. With IR on, reports carry IR data, in the basic format with an expansion attached and the extended format without.
 - **Yaw** in `mote/rpy` and `chuck/rpy` is 0 without `--ir` (or `--fusion`, for `mote/rpy`). The accelerometers only sense gravity, so they can't measure yaw. Roll and pitch are only reliable while the device isn't accelerating. wiiuse smooths them (`WIIUSE_SMOOTHING`).
@@ -90,15 +92,31 @@ wiimosc-stream --id 0=B8:AE:6E:56:1B:BD --id 1=8C:CD:E8:C4:D5:0F --id 2=00:1F:C5
 - **Drift**: the accelerometer keeps pitch and roll correct over time. **Yaw is from the gyro alone and drifts** slowly. The bias is re-estimated whenever the remote rests for 3 s, which slows the drift but can't undo what has accumulated. Very slow, steady turns (below ~3 deg/s for several seconds) can be mistaken for bias.
 - **Fast movement**: while the remote is swung or shaken (acceleration more than 20% off 1 g), the accelerometer is ignored and the gyro carries the orientation alone. Very vigorous motion can leave pitch and roll off by ~10° (the gyro saturates at ~1700 deg/s). Once the remote is still, they return to the accelerometer's within ~1 s.
 - **Gyro scale**: the MotionPlus's stored calibration overstates its sensitivity by 10–30%; wiimosc corrects it to the one measured on two Wiimote Plus (a 360° turn reads 357–364°). A MotionPlus accessory hasn't been measured; if its yaw consistently over- or undershoots, the correction may not fit it.
-- **IR**: with `--ir`, the IR messages are unchanged, but `mote/rpy`'s yaw is the fused one, not wiiuse's IR-based one. Using the sensor bar to correct the yaw is planned.
+- **IR**: with `--ir`, the IR messages are unchanged, but `mote/rpy`'s yaw is the fused one, not wiiuse's IR-based one. The IR anchors correct it (next section).
 - After the MotionPlus is deactivated and reactivated (e.g. after a reconnect), the startup is repeated.
+
+## IR anchors (`--ir anchor=...`)
+
+With `--ir` and `--fusion`, IR emitters at known directions correct the fused yaw, so it stays right over a wide range of angles, e.g. for pointing at many things in a room. The design and its assumptions are in [Fusion.md §10](Fusion.md#10-ir-anchors).
+
+```
+wiimosc-stream --fusion madg --ir anchor=0,-60,60:20
+```
+
+- **Anchors**: a comma-separated list of `yaw[:elevation]`, in degrees as in `mote/rpy` (yaw positive to the left, elevation like pitch, positive up). The first is the **home anchor**, a sensor bar (two sources side by side; that's also where a screen would be). The others are **single IR sources**. Without `anchor=`, there's only the home anchor, at yaw 0. Elevations are optional; given, they also rule out sources at other heights (±15°), e.g. reflections on a table.
+- **Setting up**: point the remote at each emitter and read the yaw off `mote/rpy` (after syncing to home). Single sources must be more than ~40° apart (and from home), so that one can't be mistaken for another.
+- **Syncing**: yaw starts at the heading at startup, as without IR. Once the remote has seen the home anchor, yaw refers to the anchors (the terminal prints `fusion: yaw synced to the home anchor`). Until then, single sources aren't used, since they can't be told apart. Seeing home again with the yaw more than 15° off resets it.
+- **Correction**: each anchor in view pulls the yaw towards its own direction, gradually (time constant 0.5 s), and faster while the remote turns, where it's hard to notice. Between anchors, the yaw drifts as without IR. A single source is taken for the nearest anchor within 20°, and ignored otherwise.
+- **`mote/ir/anchor`**: the index of the anchor in view (0 = home), or −1. Also useful by itself, e.g. "pointing at element 2". With only one source of the home pair visible, it reports home without correcting.
+- **Assumptions**: the remote stays at about the same place (stepping 0.5 m sideways shifts an emitter 4 m away by ~7°), and emitters face the remote. Roll and pitch are never changed by IR.
+- Remotes without a MotionPlus just stream the IR messages.
 
 ## Implementation
 
 - `src/hub/WiimoteHub`: shared by both tools. It runs pairing, device pickup and each device on separate threads, and handles connection output and rumble/blink feedback. It reports to an `AbstractHubListener` (`connected`, `disconnected`, `event`, `update`), called from each device's own thread.
 - `src/osc/OscSender`: a minimal OSC 1.0 encoder (int32, float32, string) plus a UDP socket (Winsock / BSD sockets, `SO_BROADCAST` set). No external dependency; OSC messages are simple enough.
 - `src/stream/WiimoteStreamer`: the listener that maps device state to OSC. It reads wiiuse's state on every `update()` rather than reacting to events, and sends a value only if it differs from the last one sent on that address (cached per device). Buttons are checked on every update; continuous values are subject to the rate limit.
-- `src/fusion`: sensor fusion, independent of wiiuse. `MotionFusion` (per remote) converts the raw gyro values with `MotionPlusCalibration`, handles the startup at rest, and drives an `AbstractOrientationFilter`: `MadgwickFilter` for now; an EKF with IR is planned. Details in [Fusion.md](Fusion.md).
+- `src/fusion`: sensor fusion, independent of wiiuse. `MotionFusion` (per remote) converts the raw gyro values with `MotionPlusCalibration`, handles the startup at rest, and drives an `AbstractOrientationFilter`: `MadgwickFilter` for now. `IrAnchorCorrection` corrects its yaw with the IR anchors. Details in [Fusion.md](Fusion.md).
 - `tools/oscdump.py`: a minimal receiver for testing, `python tools/oscdump.py 4321 20`.
 
 ## Status
@@ -114,7 +132,8 @@ wiimosc-stream --id 0=B8:AE:6E:56:1B:BD --id 1=8C:CD:E8:C4:D5:0F --id 2=00:1F:C5
 | 0-based ids, `fit/corner/*` (empty board → 0) | ✅ received |
 | `--id` mapping, reserved ids, shutdown summary, argument validation | ✅ tested with 2 remotes + board (both tools) |
 | `--idle-timeout` (resting remote + empty board), `status none` on idle shutdown | ✅ both shut down after the timeout; `status none` received |
-| `--ir`: count, xy, dots, orientation, yaw | ⏳ builds; not yet run on hardware |
+| `--ir`: count, xyz, dots, orientation, yaw | ⏳ builds; not yet run on hardware |
+| `--ir anchor=...` with `--fusion madg`: sync, correction, `mote/ir/anchor` | ⏳ the first live test with a sensor bar showed yaw jumps (wrong camera x sign); fixed, and verified on a recording of that bar (Fusion.md §10); not yet re-tested live; single sources untested |
 | `--fusion madg`: calibration read, startup, `rpy`, `quat`, axis signs | ✅ user-confirmed on a Wiimote Plus; signs and gyro scale verified with recordings |
 | `--fusion madg`: tuned scale and accelerometer handling (settling ~1 s after motion) | ⏳ verified offline on recordings from one remote; not yet tried live; second remote's scale unchecked |
 | Button changes, board under load, `--max-rate`, broadcast, reconnect while streaming, Nunchuk plug/unplug | ⏳ not yet confirmed |

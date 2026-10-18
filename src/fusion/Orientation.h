@@ -30,3 +30,12 @@ EulerAngles toEulerAngles(const Quaternion &q);
 
 /*! \brief The orientation (with yaw 0) of a remote at rest that measures \a gravity (in g, any length). */
 Quaternion tiltFromGravity(const Vector3 &gravity);
+
+/*! \brief The rotation \a a, then \a b: a * b applied to a vector rotates it by b first. */
+Quaternion multiply(const Quaternion &a, const Quaternion &b);
+
+/*! \brief \a v rotated by \a q (e.g. from the body frame to the world frame). */
+Vector3 rotate(const Quaternion &q, const Vector3 &v);
+
+/*! \brief A rotation about the world's vertical by \a degrees, i.e. one that adds that much yaw. */
+Quaternion yawRotation(float degrees);

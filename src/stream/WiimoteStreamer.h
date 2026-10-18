@@ -30,6 +30,11 @@ public:
         bool isTaring = false;    //!< zeroes the Balance Board's sensors after connecting
         bool isIrEnabled = false; //!< activates the IR camera, and streams the IR sources it sees
         int irSensitivity = 3;    //!< IR camera sensitivity, 1 (least) to 5 (most); wiiuse's default is 3
+        /*! \brief With fusion: IR anchors that correct the yaw, the home anchor (a sensor bar) first.
+
+            With --ir and fusion, but no anchors given, it's just the home anchor, at yaw 0.
+         */
+        std::vector<IrAnchor> irAnchors;
     };
 
     WiimoteStreamer(OscSender &sender, const Options &options);
@@ -56,6 +61,7 @@ private:
 
         std::unique_ptr<MotionFusion> fusion; //!< only with Options::fusion, on remotes with a MotionPlus
         bool isFusionActive = false;          //!< the MotionPlus reports, and its calibration was read
+        bool isIrSynced = false;              //!< the fusion's yaw refers to the IR anchors
     };
 
     std::string address(int id, const char *path) const;
