@@ -1,6 +1,6 @@
 # Project
 
-You working on wiimosc, a cross-platform utility that pairs to Nintendo Wiimotes (wiimote & nunchuck, wiifit scale) and converts their inputs into OSC signals.
+You are working on wiimosc, a cross-platform utility that pairs to Nintendo Wiimotes (wiimote & nunchuck, wiifit scale) and converts their inputs into OSC signals.
 
 ## Information
 
