@@ -35,6 +35,9 @@ void printUsage()
                 "  --prefix <prefix>  address prefix (default \"wiimosc\")\n"
                 "  --max-rate <hz>    max. rate of continuous values per device, 0 = unlimited (default 0)\n"
                 "  --gyro             enable the MotionPlus gyro on supporting remotes (hides a Nunchuk)\n"
+                "  --fusion <madg|off>\n"
+                "                     sensor fusion on remotes with a MotionPlus (hides a Nunchuk): fused mote/rpy\n"
+                "                     including yaw, and mote/quat; madg = Madgwick's AHRS (default off)\n"
                 "  --tare             zero the Balance Board after connecting (keep it empty)\n"
                 "  --ir               enable the IR camera, and stream the IR sources it sees\n"
                 "  --ir-sensitivity <1-5>\n"
@@ -74,6 +77,11 @@ int main(int argc, char **argv)
             options.maxRate = std::atoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--gyro") == 0) {
             options.isGyroEnabled = true;
+        } else if (std::strcmp(argv[i], "--fusion") == 0 && hasValue) {
+            if (!parseFilterType(argv[++i], &options.fusion)) {
+                printUsage();
+                return 1;
+            }
         } else if (std::strcmp(argv[i], "--tare") == 0) {
             options.isTaring = true;
         } else if (std::strcmp(argv[i], "--ir") == 0) {

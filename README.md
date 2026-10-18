@@ -43,7 +43,7 @@ This streams every device's input to the OSC target, for example:
 /wiimosc/1/fit/xy          0.05 -0.21
 ```
 
-Further options: `--max-rate <hz>`, `--gyro` (MotionPlus), `--ir` (IR camera: pointer and IR source positions), `--tare` (Balance Board), broadcast targets, and fixed ids per controller (`--id 0=B8:AE:6E:56:1B:BD`, also in `wiimosc-pair`; on Ctrl+C, both tools print the `--id` arguments for the connected controllers, ready to paste). See [doc/Streaming.md](doc/Streaming.md) for all addresses and options. To check the output without other software: `python tools/oscdump.py 4321 20`.
+Further options: `--max-rate <hz>`, `--gyro` (MotionPlus), `--fusion madg` (sensor fusion on Wiimote Plus remotes: orientation including yaw, and a quaternion), `--ir` (IR camera: pointer and IR source positions), `--tare` (Balance Board), broadcast targets, and fixed ids per controller (`--id 0=B8:AE:6E:56:1B:BD`, also in `wiimosc-pair`; on Ctrl+C, both tools print the `--id` arguments for the connected controllers, ready to paste). See [doc/Streaming.md](doc/Streaming.md) for all addresses and options. To check the output without other software: `python tools/oscdump.py 4321 20`.
 
 ### `wiimosc-pair`: pairing & testing
 
@@ -83,9 +83,13 @@ The speaker is lo-fi by nature, and on Windows the link carries only ~60 audio r
 | `src/stream/` | `wiimosc-stream` command-line tool |
 | `src/pairtool/` | `wiimosc-pair` command-line tool |
 | `src/speaker/` | `wiimosc-speaker` command-line tool: speaker protocol, audio decoding and resampling |
+| `src/fusion/` | Sensor fusion for `--fusion` ([details](doc/Fusion.md)) |
+| `src/record/`, `src/replay/` | `wiimosc-record` / `wiimosc-replay`: record a Wiimote Plus's raw motion data, and replay it through the sensor fusion |
+| `data/recordings/` | Raw motion recordings from real remotes, for tuning the fusion offline ([format](data/recordings/README.md)) |
 | `tools/` | Testing helpers: `oscdump.py` (OSC receiver), `oscrate.py` (message rates), `timestamp.py` (timestamped output) |
 | `external/wiiuse/` | wiiuse library, patched locally to pick up devices that connect later ([details](doc/Pairing.md#wiiuse-patches)) |
-| `doc/` | [Development notes](doc/DevelopmentNotes.md) (start here), [pairing](doc/Pairing.md), [streaming](doc/Streaming.md) and [speaker](doc/Speaker.md) internals, [background notes on Wiimotes for A/V](doc/Wiimotes%20for%20AV-interactions.md) |
+| `external/Fusion/` | [xioTechnologies Fusion](https://github.com/xioTechnologies/Fusion) (Madgwick's AHRS), unmodified |
+| `doc/` | [Development notes](doc/DevelopmentNotes.md) (start here), [pairing](doc/Pairing.md), [streaming](doc/Streaming.md), [sensor fusion](doc/Fusion.md) and [speaker](doc/Speaker.md) internals, [background notes on Wiimotes for A/V](doc/Wiimotes%20for%20AV-interactions.md) |
 
 ## Platform support
 

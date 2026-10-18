@@ -8,11 +8,33 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
 set(BUILD_EXAMPLE_SDL OFF CACHE BOOL "" FORCE)
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+# Full accelerometer precision (Wiimote 10/9/9 bits, Nunchuk 10 bits) instead of 8 bits per axis. Only changes the
+# values of accel/gforce/orient, not their units or wiiuse's struct layout, so wiimosc needn't define the macro.
+set(WITH_ACCEL_10BIT ON CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS OFF)
 add_subdirectory(external/wiiuse EXCLUDE_FROM_ALL)
 # Without WIIUSE_STATIC the header declares dllimport, which breaks static linking on MSVC.
 target_compile_definitions(wiiuse PUBLIC WIIUSE_STATIC)
 target_include_directories(wiiuse PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/external/wiiuse/src)
+
+# xioTechnologies Fusion (Madgwick's AHRS), C library
+add_subdirectory(external/Fusion/Fusion ${CMAKE_BINARY_DIR}/external/Fusion EXCLUDE_FROM_ALL)
+
+add_library(motionfusion STATIC
+    src/fusion/Orientation.h
+    src/fusion/Orientation.cpp
+    src/fusion/MotionPlusCalibration.h
+    src/fusion/MotionPlusCalibration.cpp
+    src/fusion/AbstractOrientationFilter.h
+    src/fusion/MadgwickFilter.h
+    src/fusion/MadgwickFilter.cpp
+    src/fusion/MotionFusion.h
+    src/fusion/MotionFusion.cpp)
+target_include_directories(motionfusion PUBLIC src)
+target_link_libraries(motionfusion PRIVATE Fusion)
+# Fusion's headers use C99 designated initializers, which C++ only has since C++20. Only this target's sources
+# include them; its own headers stay C++17.
+set_target_properties(motionfusion PROPERTIES CXX_STANDARD 20)
 
 add_library(pairing STATIC src/pairing/WiimotePairer.h)
 target_include_directories(pairing PUBLIC src)
@@ -42,7 +64,14 @@ add_executable(wiimosc-stream
     src/stream/main.cpp
     src/stream/WiimoteStreamer.h
     src/stream/WiimoteStreamer.cpp)
-target_link_libraries(wiimosc-stream PRIVATE hub osc)
+target_link_libraries(wiimosc-stream PRIVATE hub osc motionfusion)
+
+# Recording and replaying raw motion data, for tuning the sensor fusion offline (data/recordings/README.md)
+add_executable(wiimosc-record src/record/main.cpp)
+target_link_libraries(wiimosc-record PRIVATE hub motionfusion)
+
+add_executable(wiimosc-replay src/replay/main.cpp)
+target_link_libraries(wiimosc-replay PRIVATE motionfusion)
 
 add_executable(wiimosc-speaker
     src/speaker/main.cpp

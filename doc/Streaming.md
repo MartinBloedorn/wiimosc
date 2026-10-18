@@ -3,7 +3,7 @@
 `wiimosc-stream` pairs and connects devices the same way `wiimosc-pair` does (see [Pairing](Pairing.md)), and streams their input as OSC over UDP.
 
 ```
-wiimosc-stream --host 127.0.0.1 --port 4321 --prefix wiimosc [--max-rate 60] [--gyro] [--tare]
+wiimosc-stream --host 127.0.0.1 --port 4321 --prefix wiimosc [--max-rate 60] [--gyro] [--fusion madg] [--tare]
 ```
 
 | Option | Default | Meaning |
@@ -13,6 +13,7 @@ wiimosc-stream --host 127.0.0.1 --port 4321 --prefix wiimosc [--max-rate 60] [--
 | `--prefix` | `wiimosc` | Address prefix. Normalized: `wiimosc`, `/wiimosc/` → `/wiimosc`; may be empty. |
 | `--max-rate` | `0` | Max. rate (Hz) of continuous values per device; `0` = unlimited. Buttons and status messages are never limited. |
 | `--gyro` | off | Activates the MotionPlus on Wiimote Plus remotes and streams `mote/gyro`. A Nunchuk on such a remote is then not read. |
+| `--fusion <madg\|off>` | `off` | Sensor fusion on Wiimote Plus remotes: activates the MotionPlus (a Nunchuk is then not read), replaces `mote/rpy` with fused angles including yaw, and adds `mote/quat`. `madg` = Madgwick's AHRS ([xioTechnologies Fusion](https://github.com/xioTechnologies/Fusion)). `off` keeps wiiuse's own `mote/rpy`. See [Sensor fusion](#sensor-fusion---fusion). |
 | `--tare` | off | Zeroes the Balance Board after connecting: averages its sensors for 1 s, keep it empty. |
 | `--ir` | off | Activates the Wiimotes' IR cameras, and streams the IR sources they see (`mote/ir/...`). |
 | `--ir-sensitivity <1-5>` | `3` | IR camera sensitivity (wiiuse's presets; 5 picks up the faintest sources) |
@@ -43,8 +44,9 @@ wiimosc-stream --id 0=B8:AE:6E:56:1B:BD --id 1=8C:CD:E8:C4:D5:0F --id 2=00:1F:C5
 | `<p>/status` | string `mote` / `fit` / `none` | on connect / disconnect (including shutdowns by `--idle-timeout` and `--shutdown-on-exit`) |
 | `<p>/battery` | float 0–1 | on connect, then every 10 s |
 | `<p>/mote/button/{a,b,1,2,plus,minus,home,up,down,left,right}` | int 0/1 | on change |
-| `<p>/mote/rpy` | 3 floats, degrees: roll, pitch, yaw | continuous |
-| `<p>/mote/accel` | 3 floats, g: x, y, z | continuous |
+| `<p>/mote/rpy` | 3 floats, degrees: roll, pitch, yaw | continuous. With `--fusion` on a Wiimote Plus: fused, and only once the fusion is ready |
+| `<p>/mote/quat` | 4 floats: w, x, y, z | only with `--fusion` on a Wiimote Plus; continuous once ready: orientation, body → world (z up) |
+| `<p>/mote/accel` | 3 floats, g: x, y, z | continuous. Resolution ~0.01 g on x, ~0.02 g on y and z (the accelerometer's full 10/9/9 bits) |
 | `<p>/mote/gyro` | 3 floats, deg/s: roll, pitch, yaw rates | continuous, only with `--gyro` on a Wiimote Plus |
 | `<p>/mote/ir/count` | int 0–4 | only with `--ir`; on change: number of IR sources the camera sees |
 | `<p>/mote/ir/xy` | 2 floats, −1–1 | only with `--ir`; continuous while `count` > 0: pointer position computed by wiiuse (x right, y up) |
@@ -70,21 +72,33 @@ wiimosc-stream --id 0=B8:AE:6E:56:1B:BD --id 1=8C:CD:E8:C4:D5:0F --id 2=00:1F:C5
   - Both use the same orientation. Whether x grows when pointing right hasn't been confirmed on hardware yet.
   - **Yaw:** while sources are visible, wiiuse also computes the yaw in `mote/rpy` from them.
   - Enabling the camera blocks that remote's thread for ~100 ms when it connects. With IR on, reports carry IR data, in the basic format with an expansion attached and the extended format without.
-- **Yaw** in `mote/rpy` and `chuck/rpy` is 0 without `--ir`. The accelerometers only sense gravity, so they can't measure yaw. Roll and pitch are only reliable while the device isn't accelerating. wiiuse smooths them (`WIIUSE_SMOOTHING`).
+- **Yaw** in `mote/rpy` and `chuck/rpy` is 0 without `--ir` (or `--fusion`, for `mote/rpy`). The accelerometers only sense gravity, so they can't measure yaw. Roll and pitch are only reliable while the device isn't accelerating. wiiuse smooths them (`WIIUSE_SMOOTHING`).
 - **Gyro**: wiiuse calibrates the MotionPlus on its first reading, so the remote should lie still for a moment after connecting with `--gyro`. Even then, a resting remote can show a small constant rate on one axis (e.g. 0.8–5.8 deg/s roll was observed), which a future sensor fusion step would have to estimate and remove. wiiuse doesn't integrate the rates into an orientation. Enabling the MotionPlus blocks that device's thread for ~0.5 s.
-- **MotionPlus vs. Nunchuk**: the MotionPlus and a Nunchuk share the expansion port. wiiuse's pass-through mode (both at once) never reads the Nunchuk's calibration, so stick and acceleration values would be off. Switching modes on plug/unplug stalls all devices for ~1 s. Hence `--gyro` is opt-in: without it, Nunchuks work everywhere. Revisit when implementing sensor fusion.
+- **MotionPlus vs. Nunchuk** (`--gyro`, `--fusion`): the MotionPlus and a Nunchuk share the expansion port. wiiuse's pass-through mode (both at once) never reads the Nunchuk's calibration, so stick and acceleration values would be off. Switching modes on plug/unplug stalls all devices for ~1 s. Hence `--gyro` is opt-in: without it, Nunchuks work everywhere. Revisit when implementing sensor fusion.
 - **Balance Board values** are clamped at 0 kg per sensor by wiiuse (`do_interpolate`), so an empty board reads exactly 0. `--tare` can therefore only remove positive offsets.
   - Don't use `wiiuse_set_wii_board_calib()` for taring: it writes calibration data into the board's memory.
 - **Battery**: the streamer requests a fresh status report on connect, and sends the level when it arrives. A bogus level (0.005) was observed before the wiiuse I/O fixes (see [Pairing](Pairing.md#wiiuse-patches)).
-- **Rate**: with motion sensing on, a Wiimote sends roughly 50–100 reports/s, and accelerometer noise makes `rpy`/`accel` change on nearly every one. That's ~200 messages/s per remote, or ~250 with `--gyro`. Use `--max-rate` to reduce traffic.
+- **Rate**: with motion sensing on, a Wiimote sends roughly 50–100 reports/s (~180 with the MotionPlus active), and accelerometer noise makes `rpy`/`accel` change on nearly every one. That's ~200 messages/s per remote, or ~250 with `--gyro`. Use `--max-rate` to reduce traffic.
+- **Accelerometer resolution**: wiiuse is built with its full-precision option (`WITH_ACCEL_10BIT`): steps of ~0.01 g on the Wiimote's x axis, ~0.02 g on y and z, ~0.01 g on the Nunchuk's (it was 0.04 g everywhere before). The calibration is read at full precision as well, so resting values can differ slightly from older builds (e.g. 1.049 → 1.045 g).
 - **Stalls**: each device runs on its own thread (see [Pairing](Pairing.md#pair--test-tool-wiimosc-pair)), so wiiuse's blocking calls (connecting, plugging in a Nunchuk, enabling the MotionPlus) only pause that one device.
 - **Testing**: only one program should receive on the target port. With two receivers bound to the same port (e.g. Protokol and `oscdump.py`), Windows splits the packets between them, which looks like dropouts.
+
+## Sensor fusion (`--fusion`)
+
+- **Startup**: after the MotionPlus is activated, wiimosc reads its factory calibration, then waits until the remote has been **still for 1 s** (lying on a table, or held steadily). Any movement restarts that wait. It measures the gyro's bias there, and starts with the remote's actual pitch and roll, and **yaw 0 = the heading at that moment**. The terminal shows each step: `fusion: MotionPlus calibration read ...`, then `fusion: ready (gyro bias ...; N reports/s)`. Until then, `mote/rpy` and `mote/quat` aren't sent.
+- **Angles**: `mote/rpy` has the same meaning and signs for roll and pitch as without fusion (wiiuse's accelerometer angles), but stays valid while the remote moves. Yaw is positive when turning left (counter-clockwise seen from above). Order: yaw, then pitch, then roll. Pointing straight up or down, yaw and roll can't be told apart (gimbal lock); `mote/quat` has no such problem.
+- **Drift**: the accelerometer keeps pitch and roll correct over time. **Yaw is from the gyro alone and drifts** slowly. The bias is re-estimated whenever the remote rests for 3 s, which slows the drift but can't undo what has accumulated. Very slow, steady turns (below ~3 deg/s for several seconds) can be mistaken for bias.
+- **Fast movement**: while the remote is swung or shaken (acceleration more than 20% off 1 g), the accelerometer is ignored and the gyro carries the orientation alone. Very vigorous motion can leave pitch and roll off by ~10° (the gyro saturates at ~1700 deg/s). Once the remote is still, they return to the accelerometer's within ~1 s.
+- **Gyro scale**: the MotionPlus's stored calibration overstates its sensitivity by 10–30%; wiimosc corrects it to the one measured on two Wiimote Plus (a 360° turn reads 357–364°). A MotionPlus accessory hasn't been measured; if its yaw consistently over- or undershoots, the correction may not fit it.
+- **IR**: with `--ir`, the IR messages are unchanged, but `mote/rpy`'s yaw is the fused one, not wiiuse's IR-based one. Using the sensor bar to correct the yaw is planned.
+- After the MotionPlus is deactivated and reactivated (e.g. after a reconnect), the startup is repeated.
 
 ## Implementation
 
 - `src/hub/WiimoteHub`: shared by both tools. It runs pairing, device pickup and each device on separate threads, and handles connection output and rumble/blink feedback. It reports to an `AbstractHubListener` (`connected`, `disconnected`, `event`, `update`), called from each device's own thread.
 - `src/osc/OscSender`: a minimal OSC 1.0 encoder (int32, float32, string) plus a UDP socket (Winsock / BSD sockets, `SO_BROADCAST` set). No external dependency; OSC messages are simple enough.
 - `src/stream/WiimoteStreamer`: the listener that maps device state to OSC. It reads wiiuse's state on every `update()` rather than reacting to events, and sends a value only if it differs from the last one sent on that address (cached per device). Buttons are checked on every update; continuous values are subject to the rate limit.
+- `src/fusion`: sensor fusion, independent of wiiuse. `MotionFusion` (per remote) converts the raw gyro values with `MotionPlusCalibration`, handles the startup at rest, and drives an `AbstractOrientationFilter`: `MadgwickFilter` for now; an EKF with IR is planned. Details in [Fusion.md](Fusion.md).
 - `tools/oscdump.py`: a minimal receiver for testing, `python tools/oscdump.py 4321 20`.
 
 ## Status
@@ -101,4 +115,6 @@ wiimosc-stream --id 0=B8:AE:6E:56:1B:BD --id 1=8C:CD:E8:C4:D5:0F --id 2=00:1F:C5
 | `--id` mapping, reserved ids, shutdown summary, argument validation | ✅ tested with 2 remotes + board (both tools) |
 | `--idle-timeout` (resting remote + empty board), `status none` on idle shutdown | ✅ both shut down after the timeout; `status none` received |
 | `--ir`: count, xy, dots, orientation, yaw | ⏳ builds; not yet run on hardware |
+| `--fusion madg`: calibration read, startup, `rpy`, `quat`, axis signs | ✅ user-confirmed on a Wiimote Plus; signs and gyro scale verified with recordings |
+| `--fusion madg`: tuned scale and accelerometer handling (settling ~1 s after motion) | ⏳ verified offline on recordings from one remote; not yet tried live; second remote's scale unchecked |
 | Button changes, board under load, `--max-rate`, broadcast, reconnect while streaming, Nunchuk plug/unplug | ⏳ not yet confirmed |

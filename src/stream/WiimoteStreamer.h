@@ -1,10 +1,12 @@
 #pragma once
 
+#include "fusion/MotionFusion.h"
 #include "hub/WiimoteHub.h"
 
 #include <chrono>
 #include <initializer_list>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -23,6 +25,8 @@ public:
         std::string prefix;       //!< normalized: empty, or starting with '/' and without trailing '/'
         int maxRate = 0;          //!< per device, in Hz; 0 is unlimited
         bool isGyroEnabled = false; //!< activates the MotionPlus on supporting remotes (hides a Nunchuk)
+        /*! \brief Sensor fusion on remotes with a MotionPlus (which it activates): mote/rpy and mote/quat. */
+        FilterType fusion = FilterType::None;
         bool isTaring = false;    //!< zeroes the Balance Board's sensors after connecting
         bool isIrEnabled = false; //!< activates the IR camera, and streams the IR sources it sees
         int irSensitivity = 3;    //!< IR camera sensitivity, 1 (least) to 5 (most); wiiuse's default is 3
@@ -49,6 +53,9 @@ private:
         double tareSums[4] = {};
         int tareSamples = 0;
         float tareOffsets[4] = {};
+
+        std::unique_ptr<MotionFusion> fusion; //!< only with Options::fusion, on remotes with a MotionPlus
+        bool isFusionActive = false;          //!< the MotionPlus reports, and its calibration was read
     };
 
     std::string address(int id, const char *path) const;
@@ -60,6 +67,8 @@ private:
     void sendInt(int id, const char *path, int value);
     void sendBattery(int id, const wiimote_t *wm);
 
+    /*! \brief Feeds an input report to the device's MotionFusion. */
+    void updateFusion(int id, wiimote_t *wm);
     void updateWiimote(int id, wiimote_t *wm, bool isSendingContinuous);
     void updateBoard(int id, wiimote_t *wm, bool isSendingContinuous);
 

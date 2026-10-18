@@ -8,6 +8,10 @@
 #include <cstdio>
 #include <string>
 
+// wiiuse-internal (io.h): reads registers, blocking until the reply arrives.
+extern "C" void wiiuse_read_data_sync(struct wiimote_t *wm, byte memory, unsigned addr, unsigned short size,
+                                      byte *data);
+
 namespace {
 
 struct ButtonName {
@@ -73,8 +77,15 @@ void WiimoteStreamer::connected(int id, wiimote_t *wm, DeviceType type)
         wiiuse_set_ir_sensitivity(wm, mOptions.irSensitivity);
         wiiuse_set_ir(wm, 1);
     }
-    if (mOptions.isGyroEnabled && WIIMOTE_IS_SET(wm, WIIMOTE_STATE_MPLUS_PRESENT)) {
-        // The gyro calibrates on its first reading, so the remote should lie still.
+    const bool hasMotionPlus = WIIMOTE_IS_SET(wm, WIIMOTE_STATE_MPLUS_PRESENT);
+    if (mOptions.fusion != FilterType::None) {
+        if (hasMotionPlus)
+            device.fusion = std::make_unique<MotionFusion>(mOptions.fusion);
+        else
+            std::printf("[%d] no MotionPlus, no sensor fusion: wiiuse's mote/rpy\n", id);
+    }
+    if ((mOptions.isGyroEnabled || device.fusion) && hasMotionPlus) {
+        // wiiuse's gyro (and the fusion's) calibrates at rest, so the remote should lie still.
         std::printf("[%d] enabling MotionPlus, keep the remote still\n", id);
         wiiuse_set_motion_plus(wm, 1);
     }
@@ -90,6 +101,51 @@ void WiimoteStreamer::event(int id, wiimote_t *wm)
 {
     if (wm->event == WIIUSE_STATUS)
         sendBattery(id, wm);
+    else if (wm->event == WIIUSE_EVENT && mDevices[id].fusion)
+        updateFusion(id, wm);
+}
+
+void WiimoteStreamer::updateFusion(int id, wiimote_t *wm)
+{
+    // Called per input report (update() also runs when the poll timed out). wiiuse only reports an event when
+    // something changed, but the gyro's noise changes on nearly every report, and the time between reports is
+    // measured anyway.
+    Device &device = mDevices[id];
+    if (wm->exp.type != EXP_MOTION_PLUS) {
+        device.isFusionActive = false;
+        return;
+    }
+
+    if (!device.isFusionActive) {
+        // On activation (and again after the MotionPlus was deactivated): its calibration, then a fresh start.
+        device.isFusionActive = true;
+        byte data[MotionPlusCalibration::sSize];
+        wiiuse_read_data_sync(wm, 0, MotionPlusCalibration::sAddress, sizeof(data), data);
+        MotionPlusCalibration calibration;
+        if (calibration.parse(data))
+            std::printf("[%d] fusion: MotionPlus calibration read (range %.0f deg/s), keep the remote still\n", id,
+                        calibration.range());
+        else
+            std::printf("[%d] fusion: MotionPlus calibration unreadable, using nominal values; keep the remote still\n",
+                        id);
+        device.fusion->setCalibration(calibration);
+        return;
+    }
+
+    const motion_plus_t &mp = wm->exp.mp;
+    const uint16_t rawGyro[3] = {static_cast<uint16_t>(mp.raw_gyro.pitch), static_cast<uint16_t>(mp.raw_gyro.roll),
+                                 static_cast<uint16_t>(mp.raw_gyro.yaw)};
+    // acc_mode bits: roll (4), pitch (2), yaw (1); set while slow.
+    const bool isSlow[3] = {(mp.acc_mode & 0x02) != 0, (mp.acc_mode & 0x04) != 0, (mp.acc_mode & 0x01) != 0};
+    const double time = std::chrono::duration<double>(Clock::now().time_since_epoch()).count();
+
+    const bool wasReady = device.fusion->isReady();
+    device.fusion->addReport(time, rawGyro, isSlow, Vector3{wm->gforce.x, wm->gforce.y, wm->gforce.z});
+    if (!wasReady && device.fusion->isReady()) {
+        const FilterSetup &setup = device.fusion->setup();
+        std::printf("[%d] fusion: ready (gyro bias %.2f, %.2f, %.2f deg/s; %.0f reports/s)\n", id, setup.gyroBias.x,
+                    setup.gyroBias.y, setup.gyroBias.z, setup.sampleRate);
+    }
 }
 
 void WiimoteStreamer::update(int id, wiimote_t *wm)
@@ -146,7 +202,16 @@ void WiimoteStreamer::updateWiimote(int id, wiimote_t *wm, bool isSendingContinu
         }
     }
 
-    sendFloats(id, "mote/rpy", {wm->orient.roll, wm->orient.pitch, wm->orient.yaw});
+    const MotionFusion *fusion = mDevices[id].fusion.get();
+    if (!fusion) {
+        sendFloats(id, "mote/rpy", {wm->orient.roll, wm->orient.pitch, wm->orient.yaw});
+    } else if (fusion->isReady()) {
+        // Nothing while calibrating: receivers shouldn't mix wiiuse's angles with fused ones.
+        const Quaternion q = fusion->orientation();
+        const EulerAngles angles = toEulerAngles(q);
+        sendFloats(id, "mote/rpy", {angles.roll, angles.pitch, angles.yaw});
+        sendFloats(id, "mote/quat", {q.w, q.x, q.y, q.z});
+    }
     sendFloats(id, "mote/accel", {wm->gforce.x, wm->gforce.y, wm->gforce.z});
     if (wm->exp.type == EXP_MOTION_PLUS) {
         const ang3f_t &rate = wm->exp.mp.angle_rate_gyro;

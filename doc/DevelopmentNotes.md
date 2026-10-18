@@ -1,8 +1,8 @@
 # Development notes
 
-This is a handover for agents continuing work on wiimosc. It collects the technical decisions, the findings behind them (many found the hard way, on hardware), the current state, and open work. The topic docs have more detail: [Pairing.md](Pairing.md) (Bluetooth pairing, hub, wiiuse patches), [Streaming.md](Streaming.md) (OSC tool and address reference) and [Speaker.md](Speaker.md) (speaker prototype). Coding style lives in [../CLAUDE.md](../CLAUDE.md).
+This is a handover for agents continuing work on wiimosc. It collects the technical decisions, the findings behind them (many found the hard way, on hardware), the current state, and open work. The topic docs have more detail: [Pairing.md](Pairing.md) (Bluetooth pairing, hub, wiiuse patches), [Streaming.md](Streaming.md) (OSC tool and address reference), [Fusion.md](Fusion.md) (sensor fusion: design, measurements, tuning) and [Speaker.md](Speaker.md) (speaker prototype). Coding style lives in [../CLAUDE.md](../CLAUDE.md).
 
-Last updated: 2026-10-16.
+Last updated: 2026-10-18.
 
 ## 1. State of the project
 
@@ -14,7 +14,7 @@ Last updated: 2026-10-16.
 | `wiimosc-stream` (OSC) | ✅ working: Wiimote buttons/rpy/accel/gyro, Nunchuk, Balance Board (empty board only), battery, status |
 | `wiimosc-speaker` (speaker prototype) | 🧪 streams without errors at ≤ 60 reports/s; sound quality not yet confirmed by ear ([Speaker.md](Speaker.md)) |
 | Linux / macOS | ❌ not implemented; CMake stops with `FATAL_ERROR` on non-Windows |
-| Sensor fusion (real yaw) | ❌ not started; the user wants it eventually |
+| Sensor fusion (`--fusion madg`: fused rpy with yaw, quaternion) | ✅ works on hardware (user-confirmed); gyro scale and accelerometer handling tuned on recordings of both remotes ([Fusion.md](Fusion.md), §6c). IR as yaw reference (EKF) planned |
 
 **Development hardware** (user's machine, Windows 10, VS 2022 Community, CMake, Python 3.11):
 
@@ -30,11 +30,16 @@ src/pairing/   WiimotePairer: Bluetooth inquiry + OS-level pairing (WiimotePaire
 src/hub/       WiimoteHub + AbstractHubListener: threads, device pickup, feedback (shared by both tools)
 src/osc/       OscMessage / OscSender: minimal OSC 1.0 encoder + UDP sender (portable)
 src/stream/    wiimosc-stream: WiimoteStreamer (listener → OSC) + CLI
+src/fusion/    MotionFusion (rest calibration → AbstractOrientationFilter), MadgwickFilter, MotionPlusCalibration
+src/record/    wiimosc-record: logs a Wiimote Plus's raw motion data to CSV (optionally rumble-cued steps)
+src/replay/    wiimosc-replay: runs a recording through MotionFusion, prints the orientation as CSV
+data/recordings/  raw motion recordings from real remotes + README (format, content of each)
 src/pairtool/  wiimosc-pair: listener that prints A presses + CLI
 src/speaker/   wiimosc-speaker: WiimoteSpeaker (speaker protocol, paced sender), Audio (decoding, resampling) + CLI
 external/wiiuse/  vendored wiiuse 0.16.0, PATCHED (see §5)
+external/Fusion/  xioTechnologies Fusion v1.3.3 (MIT, submodule, unmodified): Madgwick's AHRS in C
 tools/         oscdump.py, oscrate.py, timestamp.py (testing helpers, see §8)
-doc/           Pairing.md, Streaming.md, Speaker.md, this file, user's background notes
+doc/           Pairing.md, Streaming.md, Fusion.md, Speaker.md, this file, user's background notes
 ```
 
 ```
@@ -42,8 +47,9 @@ cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release      # or Debug: enables wiiuse's WIIUSE_DEBUG log
 ```
 
-- wiiuse is built as a static subproject (`add_subdirectory(... EXCLUDE_FROM_ALL)`, examples/tests off). `WIIUSE_STATIC` **must** be defined publicly on the target, or `wiiuse.h` declares `dllimport` and linking fails on MSVC.
-- Libraries: `pairing` (bthprops, ws2_32), `hub` (pairing + wiiuse, hid), `osc` (ws2_32). Executables: `wiimosc-pair`, `wiimosc-stream`, `wiimosc-speaker` (+ Media Foundation, winmm; built with `NOMINMAX`, since `windows.h`'s `min`/`max` macros break `std::min`).
+- wiiuse is built as a static subproject (`add_subdirectory(... EXCLUDE_FROM_ALL)`, examples/tests off), with **`WITH_ACCEL_10BIT` on** (the fork's opt-in full accelerometer precision: Wiimote x 10-bit ≈ 0.01 g steps, y/z 9-bit ≈ 0.02 g, Nunchuk 10-bit; 8-bit was 0.04 g; the calibration is read at full precision too). It only changes values, not units or struct layout, so wiimosc doesn't define `WIIUSE_ACCEL_10BIT` itself; don't use wiiuse's raw `accel` or the `*_ACCEL_*SHIFT` macros without it. Button masks (`WIIMOTE_BUTTON_ALL`) exclude the extra bits. `WIIUSE_STATIC` **must** be defined publicly on the target, or `wiiuse.h` declares `dllimport` and linking fails on MSVC.
+- Fusion is built from its `Fusion/` subfolder (library only). **Its headers only compile as C++20** in MSVC (C99 designated initializers), so only the `motionfusion` target is C++20, and only `MadgwickFilter.cpp` includes them. Keep Fusion types out of `src/fusion` headers.
+- Libraries: `pairing` (bthprops, ws2_32), `hub` (pairing + wiiuse, hid), `osc` (ws2_32), `motionfusion` (Fusion; no wiiuse dependency). Executables: `wiimosc-pair`, `wiimosc-stream`, `wiimosc-speaker` (+ Media Foundation, winmm; built with `NOMINMAX`, since `windows.h`'s `min`/`max` macros break `std::min`).
 - **Linking fails with `LNK1104` while the exe is running** (often the user's own instance). Never kill the user's process; ask, or build the Debug config to check compilation.
 
 ## 3. Pairing (Windows): findings
@@ -98,7 +104,7 @@ The details are in [Pairing.md](Pairing.md). The essentials:
 - **The Balance Board** is a Wiimote (PID `0x0306`) with an "expansion". Its front button is reported as `WIIMOTE_BUTTON_A`. Its LED 1 is the blue power-button LED, and it has no rumble.
 - **The board's per-sensor kg values are clamped at 0** (`do_interpolate`), so an empty board reads exactly 0, and a tare can only remove positive offsets. **Never call `wiiuse_set_wii_board_calib()`**: despite its name, it *writes calibration into the board's memory*. `--tare` is done in software (1 s average after connect).
 - `wiiuse_motion_sensing(wm, 1)` is needed for accelerometer data (`orient`, `gforce`). Yaw is only available with IR (`wiimosc-stream --ir`), and is 0 otherwise. IR: `wiiuse_set_ir` (blocks ~100 ms); `ir.num_dots`, raw `dot[i].rx/ry` (1024×768), and the pointer `ir.x/y` on the virtual screen `ir.vres` (560×420 by default, 4:3, bar above; keeps its last value off-screen, 0,0 without sources). Default sensitivity level 3 (`WIIMOTE_INIT_STATES`). Smoothing (`WIIUSE_SMOOTHING`) is on by default.
-- **MotionPlus**: `wiiuse_set_motion_plus(wm, 1)` (standalone) hides a Nunchuk. Mode 2 (pass-through) never reads the Nunchuk's calibration, so stick/accel values would be off, and wiiuse marks the path as incomplete. Switching modes blocks ~0.5–1 s. Gyro calibration takes the first reading as zero (the remote must be still), and a resting remote can still show a small constant rate (0.8–5.8 deg/s observed). wiiuse gives rates only, not orientation.
+- **MotionPlus**: `wiiuse_set_motion_plus(wm, 1)` (standalone) hides a Nunchuk. Mode 2 (pass-through) never reads the Nunchuk's calibration, so stick/accel values would be off, and wiiuse marks the path as incomplete. Switching modes blocks ~0.5–1 s. Gyro calibration takes the first reading as zero (the remote must be still), and a resting remote can still show a small constant rate (0.8–5.8 deg/s observed). wiiuse gives rates only, not orientation. Its rate conversion (`/20` slow, `/4` fast, plus a 0.5 deg/s dead band) is rough and unsuitable for integration; the fusion uses `raw_gyro` + `acc_mode` instead (§6c).
 - `wiiuse_status()` triggers a status report that is handled in poll (`WIIUSE_STATUS` event, `battery_level`). Before the patches, the battery level stored during the handshake was sometimes bogus.
 - Before the first input report, values are 0 (e.g. the first `mote/accel` sent is `0,0,0`).
 
@@ -112,7 +118,7 @@ The address reference is in [Streaming.md](Streaming.md).
 - **Change detection**: every address caches its last sent values per device, so only changes are sent. The cache is reset on connect, so a full state dump follows every connection.
 - **Rate**: buttons and status messages go out immediately. Continuous values are capped by `--max-rate` Hz per device (0 = unlimited, the default). The streamer reads wiiuse *state* on every `update()` rather than reacting to events, so the latest value is always the one sent.
 - **Balance Board**: `weight` (sum), `raw/0..3` (kg, order TL, TR, BL, BR), `corner/0..3` (share of total), `xy` (center of mass, x = right − left, y = top − bottom, normalized). `corner` and `xy` are 0 below 2 kg (`sMinBoardWeight`), to avoid div-by-0 and empty-board noise.
-- **Gyro is opt-in** (`--gyro`): the user rarely needs raw rates, and sensor fusion will come later. That avoids the Nunchuk conflict by default. Revisit pass-through (after reading the Nunchuk's calibration first) when doing fusion.
+- **Gyro is opt-in** (`--gyro`), as is sensor fusion (`--fusion`, §6c): the user rarely needs raw rates. That avoids the Nunchuk conflict by default. Revisit pass-through (after reading the Nunchuk's calibration first) when doing fusion.
 - `--host 0.0.0.0` is rejected: it's a listening address, and `sendto` fails on Windows. The default target is `127.0.0.1`.
 - Battery: sent on connect (after a fresh `wiiuse_status`) and every 10 s.
 
@@ -124,6 +130,17 @@ Details are in [Speaker.md](Speaker.md).
 - **On the MS stack, `WriteFile` to a remote takes ~15 ms to complete, and the link carries ~61 reports/s at most.** Asynchronous writes with several in flight don't raise that. WiiBrew's ADPCM at 3000 Hz needs 75 reports/s and is choppy; the defaults use 50 reports/s (ADPCM 2000 Hz, PCM 1000 Hz).
 - Audio reports go through the tool's own overlapped writer on `wm->dev_handle`, concurrently with the device thread's reads. That works because every write has its own `OVERLAPPED` (as in the `write_file_sync` patch).
 - `timeBeginPeriod(1)` is needed for the 16–20 ms report period.
+
+## 6c. Sensor fusion: summary
+
+The full reference (design, conventions, measurements, tuning method, open work) is **[Fusion.md](Fusion.md)**. The essentials:
+
+- **`--fusion <madg|off>`** (default off = stock wiiuse behaviour) activates the MotionPlus like `--gyro` (so it hides a Nunchuk), replaces `mote/rpy` with fused angles including yaw, and adds `mote/quat`. Remotes without MotionPlus keep wiiuse's `mote/rpy`; `--gyro` stays independent.
+- **Structure**: `src/fusion` (no wiiuse dependency). `MotionFusion` per remote converts raw values (`MotionPlusCalibration`), measures bias, gravity and report rate during 1 s of rest, then drives an `AbstractOrientationFilter` (`MadgwickFilter`, on xioTechnologies Fusion). An EKF plugs in as another filter; IR measurements would go into `MotionSample`.
+- **Gyro sensitivity**: the MotionPlus's stored scales make the gyro over-read by 10–30%. The measured sensitivity, ~20 counts per deg/s on two Wiimote Plus and unrelated to the stored values, replaces them (`sSlowSensitivity = {20.4, 20.4, 20.0}`). Yaw is now within ±1% per 360° turn.
+- **Accelerometer handling**: Fusion's own acceleration rejection is off (it trusted a shaking remote after 5 s, and rejected valid samples at rest). Instead, the accelerometer is used while |a| is within 20% of its rest value, with gain 1.0 while moving and 5.0 at rest: the tilt settles within ~1 s after motion.
+- **Samples** come from `event()` on `WIIUSE_EVENT` (~180 reports/s), with dt measured on the host.
+- **Tuning on recordings**: `wiimosc-record` / `wiimosc-replay` and `data/recordings/`. Use them again for the EKF.
 
 ## 7. Conventions & preferences
 
@@ -150,7 +167,7 @@ Details are in [Speaker.md](Speaker.md).
 - **Linux backend**: wiiuse's BlueZ path connects over L2CAP without pairing. For permanent SYNC pairing, BlueZ's `wiimote` plugin supplies the PIN, so pairing could go over D-Bus (`Device1.Pair`, `Trusted`). Check the kernel `hid-wiimote` driver claiming devices. The user couldn't get wiiuse working on Linux before.
 - **macOS backend**: `IOBluetoothDevicePair` + answering `devicePairingPINCodeRequest` with the reversed host address (like dolphin-emu/WiimotePair). It may need a `bluetoothd` restart and TCC permission. wiiuse's own mac discovery is unreliable on recent macOS.
 - The `os_win.c` find/I/O patches are Windows-specific; other backends would need equivalents (re-scan without clobbering, per-device threads).
-- **Sensor fusion** for real yaw (MotionPlus + accelerometer); see the gyro notes in §5.
+- **Sensor fusion**: the user hasn't yet tried the tuned version live. Tilt errors of ~8–14° can still build up during very vigorous motion (accelerometer unusable, gyro saturating); they settle within ~1 s at rest. Next steps (IR/EKF, 10-bit motion recordings, MotionPlus accessory, yaw re-zeroing, Nunchuk pass-through): [Fusion.md §10](Fusion.md#10-open-work).
 - Without `--id`, a device that reconnects may get a different id (lowest free one).
 - Each paired but switched-off remote adds ~5 s to every pairing scan cycle (presence probe); the probes could run in parallel.
 - Shutdown joins device threads; a thread stuck in a sync read can delay exit by up to ~15 s (3 × 5 s).
