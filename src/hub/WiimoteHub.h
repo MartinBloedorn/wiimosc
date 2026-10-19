@@ -90,6 +90,17 @@ public:
         mIdleTimeout = std::chrono::milliseconds(static_cast<long long>(minutes * 60000.0));
     }
 
+    /*! \brief Stops scanning for new remotes to pair \a seconds after start() (0 = never). Must be called before start().
+
+        Frees the radio for the connected devices: a scan cycle stalls their writes, which drops out the speaker's
+        audio stream (150 reports/s, no slack). A running scan cycle finishes first, see isPairingIdle(). Devices
+        paired before keep being picked up when they reconnect.
+     */
+    void setScanTimeout(double seconds)
+    {
+        mScanTimeout = std::chrono::milliseconds(static_cast<long long>(seconds * 1000.0));
+    }
+
     /*! \brief Opens the Bluetooth radio, and starts pairing and picking up devices in the background. */
     bool start(WiimotePairer::Method method);
 
@@ -98,6 +109,13 @@ public:
         An inquiry ties up the radio, which costs the connected remotes throughput; a running inquiry finishes first.
      */
     void setPairingPaused(bool isPaused) { *mIsPairingPaused = isPaused; }
+
+    /*! \brief True once pairing is paused (or ended by the scan timeout) and no scan is running anymore.
+
+        A scan cycle isn't interrupted by pausing, and can take ~10 s on Windows: the inquiry, plus a ~5 s page for
+        each paired device that is switched off.
+     */
+    bool isPairingIdle() const { return (*mIsPairingPaused || *mHasScanEnded) && !*mIsScanning; }
 
     /*! \brief Prints the connected devices (as "--id" arguments, to keep their ids), stops picking up devices, and
         waits for the device threads to finish.
@@ -133,6 +151,9 @@ private:
     std::atomic<bool> mIsRunning{false};
     bool mIsShuttingDownOnExit = false;
     std::chrono::milliseconds mIdleTimeout{0}; //!< 0: never
+    std::chrono::milliseconds mScanTimeout{0}; //!< 0: never
     std::shared_ptr<std::atomic<bool>> mIsPairing = std::make_shared<std::atomic<bool>>(false);
     std::shared_ptr<std::atomic<bool>> mIsPairingPaused = std::make_shared<std::atomic<bool>>(false);
+    std::shared_ptr<std::atomic<bool>> mIsScanning = std::make_shared<std::atomic<bool>>(false);
+    std::shared_ptr<std::atomic<bool>> mHasScanEnded = std::make_shared<std::atomic<bool>>(false); //!< scan timeout
 };

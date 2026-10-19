@@ -2,6 +2,7 @@
 
 #include "osc/OscReceiver.h"
 #include "osc/OscSender.h"
+#include "speaker/Audio.h"
 
 #include <wiiuse.h>
 
@@ -47,6 +48,9 @@ const float sMinBoardWeight = 2.0f;
 const float sRumbleThreshold = 0.5f;
 /*! \brief Ignored addresses are printed once each, up to this many. */
 const size_t sMaxIgnoredAddresses = 64;
+/*! \brief The speaker's settings: wiimosc-speaker's defaults, which played best (see doc/Speaker.md). */
+const WiimoteSpeaker::Settings sSpeakerSettings{};
+const char sSpeakerPath[] = "mote/speaker/";
 
 } // namespace
 
@@ -70,6 +74,10 @@ void WiimoteStreamer::connected(int id, wiimote_t *wm, DeviceType type)
 
     const bool isBoard = type == DeviceType::BalanceBoard;
     send(OscMessage(address(id, "status")).add(std::string(isBoard ? "fit" : "mote")));
+    if (!isBoard) {
+        std::lock_guard<std::mutex> lock(mSpeakers[id].mutex);
+        mSpeakers[id].wm = wm;
+    }
     // The battery level from the connection handshake can be bogus, so ask for a fresh status report instead.
     wiiuse_status(wm);
 
@@ -109,6 +117,21 @@ void WiimoteStreamer::disconnected(int id, DeviceType)
     send(OscMessage(address(id, "status")).add(std::string("none")));
     mDevices[id] = Device{};
     mRumbleRequests[id] = -1;
+    resetSpeaker(&mSpeakers[id]);
+}
+
+void WiimoteStreamer::stopSpeakers()
+{
+    for (Speaker &speaker : mSpeakers)
+        resetSpeaker(&speaker);
+}
+
+void WiimoteStreamer::resetSpeaker(Speaker *speaker)
+{
+    std::lock_guard<std::mutex> lock(speaker->mutex);
+    speaker->speaker.reset(); // mutes and switches off the speaker, if still connected
+    speaker->player.reset();
+    speaker->wm = nullptr;
 }
 
 void WiimoteStreamer::event(int id, wiimote_t *wm)
@@ -223,14 +246,71 @@ void WiimoteStreamer::received(const OscReceivedMessage &message)
         return ignore(message, "unknown address");
     const std::string path = addr.substr(position + 1);
 
-    if (path != "mote/rumble")
+    const bool isSpeaker = path.compare(0, sizeof(sSpeakerPath) - 1, sSpeakerPath) == 0;
+    if (path != "mote/rumble" && !isSpeaker)
         return ignore(message, "unknown address");
     if (id >= WiimoteHub::sMaxDevices)
         return ignore(message, "id out of range");
+    if (isSpeaker)
+        return receivedSpeaker(id, path.substr(sizeof(sSpeakerPath) - 1), message);
     float value;
     if (!message.toFloat(0, &value))
         return ignore(message, "expects a number");
     mRumbleRequests[id] = value > sRumbleThreshold ? 1 : 0;
+}
+
+void WiimoteStreamer::receivedSpeaker(int id, const std::string &command, const OscReceivedMessage &message)
+{
+    Speaker &speaker = mSpeakers[id];
+    const char *notConnected = "no Wiimote connected with this id";
+    const float maxFrequency = sSpeakerSettings.sampleRate / 2.0f;
+    float frequency = 0.0f;
+    std::shared_ptr<std::vector<float>> clip;
+    if (command == "sine") {
+        if (!message.toFloat(0, &frequency) || !(frequency > 0.0f && frequency <= maxFrequency))
+            return ignore(message, "expects a frequency in Hz (up to 3000)");
+    } else if (command == "file") {
+        if (message.arguments.empty() || (message.arguments[0].type != 's' && message.arguments[0].type != 'S'))
+            return ignore(message, "expects a file path (string)");
+        {
+            std::lock_guard<std::mutex> lock(speaker.mutex);
+            if (!speaker.wm)
+                return ignore(message, notConnected);
+        }
+        // Decoded here, without holding the lock: other OSC input waits meanwhile (~2 s for a 4-minute song).
+        const std::string &path = message.arguments[0].string;
+        const auto loadStart = Clock::now();
+        clip = std::make_shared<std::vector<float>>();
+        std::string error;
+        if (!loadAudioFile(path, sSpeakerSettings.sampleRate, clip.get(), &error)) {
+            std::printf("[%d] speaker: can't play %s: %s\n", id, path.c_str(), error.c_str());
+            return;
+        }
+        normalize(clip.get(), sSoundPeak);
+        std::printf("[%d] speaker: playing %s (%.1f s, decoded in %.0f ms)\n", id, path.c_str(),
+                    static_cast<double>(clip->size()) / sSpeakerSettings.sampleRate,
+                    std::chrono::duration<double, std::milli>(Clock::now() - loadStart).count());
+    } else if (command != "stop") {
+        return ignore(message, "unknown address");
+    }
+
+    std::lock_guard<std::mutex> lock(speaker.mutex);
+    if (!speaker.wm)
+        return ignore(message, notConnected);
+    if (command == "stop") {
+        if (speaker.player)
+            speaker.player->stop();
+        return;
+    }
+    if (!speaker.speaker) {
+        speaker.player = std::make_unique<SoundPlayer>(sSpeakerSettings.sampleRate);
+        speaker.speaker = std::make_unique<WiimoteSpeaker>(speaker.wm, id, sSpeakerSettings, speaker.player.get());
+        speaker.speaker->start();
+    }
+    if (clip)
+        speaker.player->playClip(std::move(clip));
+    else
+        speaker.player->playSine(frequency);
 }
 
 void WiimoteStreamer::ignore(const OscReceivedMessage &message, const char *reason)

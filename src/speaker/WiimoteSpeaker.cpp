@@ -163,6 +163,17 @@ void WiimoteSpeaker::run()
     timeBeginPeriod(1); // default sleep granularity is ~15 ms, more than a report period
 #endif
     std::this_thread::sleep_for(std::chrono::milliseconds(mSettings.startDelayMs));
+    if (mSettings.isRadioBusy && mSettings.isRadioBusy()) {
+        std::printf("[%d] waiting for the running scan to finish\n", mId);
+        while (mIsRunning && mSettings.isRadioBusy())
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    if (!mIsRunning) {
+#ifdef _WIN32
+        timeEndPeriod(1);
+#endif
+        return;
+    }
     setUp();
 
     const int count = samplesPerReport(mSettings.format);

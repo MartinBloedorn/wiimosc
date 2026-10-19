@@ -25,7 +25,7 @@ Both tools scan continuously in the background and pair any Nintendo device in p
 
 Every device that connects gets a line in the terminal, whether it was just paired, woke up again, or was already connected at startup. Wiimotes also get their player LED and a short rumble, and the Balance Board blinks its power LED. Press Ctrl+C to quit.
 
-Devices don't switch off by themselves while connected: on a Wii, the console does that, and the Balance Board has no power button of its own. With `--shutdown-on-exit` (all tools), quitting drops every connected device's Bluetooth link, which switches it off; a button press brings it back. `--idle-timeout <minutes>` does the same for devices that have gone unused for that long.
+Devices don't switch off by themselves while connected: on a Wii, the console does that, and the Balance Board has no power button of its own. With `--shutdown-on-exit` (all tools), quitting drops every connected device's Bluetooth link, which switches it off; a button press brings it back. `--idle-timeout <minutes>` does the same for devices that have gone unused for that long. `--scan-timeout <seconds>` (all tools) stops scanning for new remotes after that long, which frees the radio for the connected ones (e.g. for the speaker); remotes paired before still reconnect.
 
 ### `wiimosc-stream`: OSC output
 
@@ -45,7 +45,7 @@ This streams every device's input to the OSC target, for example:
 /wiimosc/1/fit/xy          0.05 -0.21
 ```
 
-Further options: `--max-rate <hz>`, `--gyro` (MotionPlus), `--fusion madg` (sensor fusion on Wiimote Plus remotes: orientation including yaw, and a quaternion), `--ir` (IR camera: pointer and IR source positions; with `--fusion`, `--ir anchor=0,-60,60` corrects the yaw with IR emitters at known directions, a sensor bar first), `--tare` (Balance Board), OSC input (`--in-port 4322`: `/wiimosc/0/mote/rumble 1` switches a remote's rumble on), broadcast targets, and fixed ids per controller (`--id 0=B8:AE:6E:56:1B:BD`, also in `wiimosc-pair`; on Ctrl+C, both tools print the `--id` arguments for the connected controllers, ready to paste). See [doc/Streaming.md](doc/Streaming.md) for all addresses and options. To check the output without other software: `python tools/oscdump.py 4321 20`.
+Further options: `--max-rate <hz>`, `--gyro` (MotionPlus), `--fusion madg` (sensor fusion on Wiimote Plus remotes: orientation including yaw, and a quaternion), `--ir` (IR camera: pointer and IR source positions; with `--fusion`, `--ir anchor=0,-60,60` corrects the yaw with IR emitters at known directions, a sensor bar first), `--tare` (Balance Board), OSC input (`--in-port 4322`: `/wiimosc/0/mote/rumble 1` switches a remote's rumble on; `/wiimosc/0/mote/speaker/sine 1000`, `.../speaker/file <path>` and `.../speaker/stop` play sounds on its speaker), broadcast targets, and fixed ids per controller (`--id 0=B8:AE:6E:56:1B:BD`, also in `wiimosc-pair`; on Ctrl+C, both tools print the `--id` arguments for the connected controllers, ready to paste). See [doc/Streaming.md](doc/Streaming.md) for all addresses and options. To check the output without other software: `python tools/oscdump.py 4321 20`.
 
 ### `wiimosc-pair`: pairing & testing
 
@@ -73,7 +73,7 @@ wiimosc-speaker --target-id 1 --test-mode file --file song.m4a
 wiimosc-speaker --target-id 1 --test-mode trigger --file click.wav
 ```
 
-The speaker is lo-fi by nature, and on Windows the link carries only ~60 audio reports/s (macOS: untested), which limits the sample rate to ~2000 Hz for ADPCM. See [doc/Speaker.md](doc/Speaker.md) for options, protocol and findings.
+The speaker is lo-fi by nature, and always plays at ~6000 Hz (ADPCM). That takes 150 audio reports/s, which a free radio carries on Windows, but which scanning for remotes disrupts. On macOS, the link carries only ~67/s, so there it buzzes. See [doc/Speaker.md](doc/Speaker.md) for options, protocol and findings. `wiimosc-stream` can play sounds too, triggered over OSC (see above).
 
 ## Layout
 
@@ -84,7 +84,7 @@ The speaker is lo-fi by nature, and on Windows the link carries only ~60 audio r
 | `src/osc/` | Minimal OSC encoder, parser, and UDP sender/receiver |
 | `src/stream/` | `wiimosc-stream` command-line tool |
 | `src/pairtool/` | `wiimosc-pair` command-line tool |
-| `src/speaker/` | `wiimosc-speaker` command-line tool: speaker protocol, audio decoding and resampling |
+| `src/speaker/` | Speaker protocol, audio decoding and resampling (library `speaker`, also used by `wiimosc-stream`), and the `wiimosc-speaker` command-line tool |
 | `src/fusion/` | Sensor fusion for `--fusion` ([details](doc/Fusion.md)) |
 | `src/record/`, `src/replay/` | `wiimosc-record` / `wiimosc-replay`: record a Wiimote Plus's raw motion data, and replay it through the sensor fusion |
 | `data/recordings/` | Raw motion recordings from real remotes, for tuning the fusion offline ([format](data/recordings/README.md)) |

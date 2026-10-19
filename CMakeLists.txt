@@ -75,7 +75,7 @@ add_executable(wiimosc-stream
     src/stream/main.cpp
     src/stream/WiimoteStreamer.h
     src/stream/WiimoteStreamer.cpp)
-target_link_libraries(wiimosc-stream PRIVATE hub osc motionfusion)
+target_link_libraries(wiimosc-stream PRIVATE hub osc motionfusion speaker)
 
 # Recording and replaying raw motion data, for tuning the sensor fusion offline (data/recordings/README.md)
 add_executable(wiimosc-record src/record/main.cpp)
@@ -84,19 +84,28 @@ target_link_libraries(wiimosc-record PRIVATE hub motionfusion)
 add_executable(wiimosc-replay src/replay/main.cpp)
 target_link_libraries(wiimosc-replay PRIVATE motionfusion)
 
-add_executable(wiimosc-speaker
-    src/speaker/main.cpp
+# Speaker streaming and audio decoding, shared by wiimosc-speaker and wiimosc-stream (mote/speaker/...)
+add_library(speaker STATIC
     src/speaker/Audio.h
     src/speaker/Audio.cpp
+    src/speaker/SoundSources.h
+    src/speaker/SoundSources.cpp
     src/speaker/WiimoteSpeaker.h
     src/speaker/WiimoteSpeaker.cpp)
-target_link_libraries(wiimosc-speaker PRIVATE hub)
+target_include_directories(speaker PUBLIC src)
+target_link_libraries(speaker PRIVATE hub)
 if(WIN32)
-    target_sources(wiimosc-speaker PRIVATE src/speaker/Audio_win.cpp)
-    target_compile_definitions(wiimosc-speaker PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_sources(speaker PRIVATE src/speaker/Audio_win.cpp)
+    target_compile_definitions(speaker PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     # Media Foundation (decoding), winmm (timer resolution), hid (HidD_SetOutputReport)
-    target_link_libraries(wiimosc-speaker PRIVATE mfplat mfreadwrite mfuuid ole32 winmm hid)
+    target_link_libraries(speaker PRIVATE mfplat mfreadwrite mfuuid ole32 winmm hid)
 elseif(APPLE)
-    target_sources(wiimosc-speaker PRIVATE src/speaker/Audio_mac.cpp)
-    target_link_libraries(wiimosc-speaker PRIVATE "-framework AudioToolbox" "-framework CoreFoundation")
+    target_sources(speaker PRIVATE src/speaker/Audio_mac.cpp)
+    target_link_libraries(speaker PRIVATE "-framework AudioToolbox" "-framework CoreFoundation")
+endif()
+
+add_executable(wiimosc-speaker src/speaker/main.cpp)
+target_link_libraries(wiimosc-speaker PRIVATE hub speaker)
+if(WIN32)
+    target_compile_definitions(wiimosc-speaker PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()

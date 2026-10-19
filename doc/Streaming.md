@@ -4,7 +4,7 @@
 
 ```
 wiimosc-stream --host 127.0.0.1 --port 4321 --prefix wiimosc [--in-port 4322] [--max-rate 60] [--gyro]
-               [--fusion madg] [--tare] [--ir [anchor=0,-60,60]]
+               [--fusion madg] [--tare] [--ir [anchor=0,-60,60]] [--scan-timeout 30]
 ```
 
 | Option | Default | Meaning |
@@ -23,6 +23,7 @@ wiimosc-stream --host 127.0.0.1 --port 4321 --prefix wiimosc [--in-port 4322] [-
 | `--id <id>=<address>` | | Always gives the device with this Bluetooth address this id (0–7). Repeatable; also available in `wiimosc-pair`. |
 | `--shutdown-on-exit` | off | Switches off all connected devices when quitting (receivers get `status none` for each). See [Pairing](Pairing.md#shutting-devices-down). |
 | `--idle-timeout <minutes>` | `0` (never) | Switches off devices that have been idle this long: no button changes, no motion, no Nunchuk stick movement, and an empty, unchanged Balance Board. Receivers get `status none`. Fractions work (`0.5`). |
+| `--scan-timeout <seconds>` | `0` (never) | Stops scanning for remotes to pair after this long, which frees the radio for the connected devices, e.g. for the speaker. A running scan cycle finishes first (up to ~10 s more on Windows), see [Pairing](Pairing.md#scan-timeout). Devices paired before still reconnect. |
 
 ## Addresses
 
@@ -73,14 +74,25 @@ With `--in-port <port>`, the streamer also receives OSC on that UDP port, and ta
 | Address | Arguments | Effect |
 |---|---|---|
 | `<p>/mote/rumble` | number, 0–1 | Rumble motor: on above 0.5, off otherwise. Any numeric type works (float, int, double, `T`/`F`). |
+| `<p>/mote/speaker/sine` | number, Hz (up to 3000) | Plays a sine on the remote's speaker until `stop` or the next sound. |
+| `<p>/mote/speaker/file` | string, path | Plays an audio file once, from the start (wav, mp3, m4a/AAC, aiff; wma on Windows). The path is on the machine running the streamer. |
+| `<p>/mote/speaker/stop` | none | Stops the current sound. |
 
 - **Rumble is on/off only**: wiiuse switches the motor, which has no intensity levels; the float argument is thresholded.
 - **Timing**: a request takes effect on the device's next poll (~10 ms), plus the write to the remote (~15 ms on Windows).
 - **Connection rumble**: the hub's short rumble on connect runs as usual until the first request for that remote. Requests for ids that aren't connected are dropped, and a remote that reconnects starts with the motor off.
-- **Quitting** (Ctrl+C) switches off the motor of any remote still rumbling.
-- **Ignored input** is reported once per address in the terminal (`[osc] ignoring /wiimosc/0/mote/led: unknown address`): unknown addresses (including another prefix), ids above 7, and a missing or non-numeric argument. Malformed packets are reported as such. Bundles are unpacked, and their time tags ignored.
+- **Quitting** (Ctrl+C) switches off the motor of any remote still rumbling, and its speaker.
+- **Speaker**: uses `wiimosc-speaker`'s defaults, which played best: ADPCM at the speaker's native 6000 Hz, full volume, asynchronous writes. See [Speaker](Speaker.md).
+  - **One sound at a time:** each request replaces the current sound.
+  - **Setup:** the first request for a remote sets up its speaker (~0.3 s), which stays on until the remote disconnects, so later sounds start right away.
+  - **Silence:** between sounds the speaker sends nothing, which costs no airtime.
+  - **Files** are decoded, resampled and normalized when the message arrives, on the receiver's thread. Meanwhile, other OSC input waits: ~50 ms for a short clip (~250 ms for the first one), ~2 s for a 4-minute song. The terminal prints each file played and its decoding time, or why it can't be played.
+  - **Statistics:** while sounds play, the speaker prints its statistics line every 5 s and when a sound ends (resyncs mean gaps).
+  - **Scanning:** in the streamer, scanning for remotes didn't cause dropouts on the development machine (14 s sine, 0 resyncs). In `wiimosc-speaker`, it does. A likely reason is the streamer's input traffic: motion sensing keeps the link busy, which may keep it out of a low-power mode. That's not verified. Use `--scan-timeout` if sounds drop out.
+  - **Board:** the Balance Board has no speaker; requests for its id are ignored as "no Wiimote connected".
+- **Ignored input** is reported once per address in the terminal (`[osc] ignoring /wiimosc/0/mote/led: unknown address`): unknown addresses (including another prefix), ids above 7, ids without a connected Wiimote (speaker only), and a missing or wrong argument. Malformed packets are reported as such. Bundles are unpacked, and their time tags ignored.
 - The port is bound on all interfaces, so any machine on the network can send to it. It must differ from the target port if the target is on the same machine.
-- Testing: `python tools/oscsend.py 4322 /wiimosc/0/mote/rumble 1` (in Git Bash, prefix it with `MSYS_NO_PATHCONV=1`, otherwise the address is turned into a Windows path).
+- Testing: `python tools/oscsend.py 4322 /wiimosc/0/mote/rumble 1`, or `python tools/oscsend.py 4322 /wiimosc/0/mote/speaker/file C:/sounds/click.wav` (values that aren't numbers are sent as strings; in Git Bash, prefix it with `MSYS_NO_PATHCONV=1`, otherwise the address is turned into a Windows path).
 
 ## Notes & caveats
 
@@ -133,9 +145,11 @@ wiimosc-stream --fusion madg --ir anchor=0,-60,60:20
 - `src/hub/WiimoteHub`: shared by both tools. It runs pairing, device pickup and each device on separate threads, and handles connection output and rumble/blink feedback. It reports to an `AbstractHubListener` (`connected`, `disconnected`, `event`, `update`), called from each device's own thread.
 - `src/osc/OscSender`: a minimal OSC 1.0 encoder (int32, float32, string) plus a UDP socket (Winsock / BSD sockets, `SO_BROADCAST` set). No external dependency; OSC messages are simple enough.
 - `src/osc/OscReceiver`: the counterpart for `--in-port`. A parser for OSC 1.0 messages and bundles (all standard argument types, numbers read as such), and a UDP socket read on its own thread, which passes each message to a handler. The streamer's `received()` runs there: it only stores the request in an atomic per id, and the device's own thread applies it in `update()`, since only that thread may touch its `wiimote_t`.
+  - **Exception: speaker requests.** They're applied right away, to a per-id `Speaker` slot guarded by a mutex: a `SoundPlayer` (`src/speaker/SoundSources`) and the `WiimoteSpeaker` that plays it. The speaker's own thread sends the audio, as in `wiimosc-speaker`; wiiuse's Windows writes don't share state between threads. The device's thread only fills the slot on connect and empties it on disconnect.
+- `src/speaker` (library `speaker`): speaker setup and streaming, audio decoding, and the sound sources. Shared with `wiimosc-speaker`, see [Speaker](Speaker.md#implementation).
 - `src/stream/WiimoteStreamer`: the listener that maps device state to OSC. It reads wiiuse's state on every `update()` rather than reacting to events, and sends a value only if it differs from the last one sent on that address (cached per device). Buttons are checked on every update; continuous values are subject to the rate limit.
 - `src/fusion`: sensor fusion, independent of wiiuse. `MotionFusion` (per remote) converts the raw gyro values with `MotionPlusCalibration`, handles the startup at rest, and drives an `AbstractOrientationFilter`: `MadgwickFilter` for now. `IrAnchorCorrection` corrects its yaw with the IR anchors. Details in [Fusion.md](Fusion.md).
-- `tools/oscdump.py`: a minimal receiver for testing, `python tools/oscdump.py 4321 20`. `tools/oscsend.py` sends single messages (`--int`, `--bundle`, `--host`).
+- `tools/oscdump.py`: a minimal receiver for testing, `python tools/oscdump.py 4321 20`. `tools/oscsend.py` sends single messages (`--int`, `--string`, `--bundle`, `--host`).
 
 ## Status
 
@@ -156,4 +170,6 @@ wiimosc-stream --fusion madg --ir anchor=0,-60,60:20
 | `--fusion madg`: tuned scale and accelerometer handling (settling ~1 s after motion) | ⏳ verified offline on recordings from one remote; not yet tried live; second remote's scale unchecked |
 | `--in-port`: receiving, parsing (floats, ints, bundles), ignored-input messages, port in use | ✅ tested without a remote, with `oscsend.py` |
 | `--in-port`: `mote/rumble` on a remote | ✅ user-confirmed on a remote (2026-10-19) |
+| `--in-port`: `mote/speaker/{sine,file,stop}` | ✅ by the statistics (2026-10-19): sine, switching sines, stop, a 2 s file played in full and stopped halfway, invalid requests reported, clean shutdown while playing; 0 resyncs throughout. ⏳ not yet confirmed by ear |
+| `--scan-timeout 5` | ✅ scanning stopped at 9.4 s, after the running cycle |
 | Button changes, board under load, `--max-rate`, broadcast, reconnect while streaming, Nunchuk plug/unplug | ⏳ not yet confirmed |

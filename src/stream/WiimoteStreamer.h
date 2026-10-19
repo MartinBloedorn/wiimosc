@@ -2,12 +2,15 @@
 
 #include "fusion/MotionFusion.h"
 #include "hub/WiimoteHub.h"
+#include "speaker/SoundSources.h"
+#include "speaker/WiimoteSpeaker.h"
 
 #include <atomic>
 #include <chrono>
 #include <initializer_list>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
 #include <vector>
@@ -21,7 +24,8 @@ struct OscReceivedMessage;
     Addresses have the form <prefix>/<id>/<path>, see doc/Streaming.md. Values are only sent when they change. Buttons
     are sent immediately, continuous values (orientation, acceleration, ...) at most \c maxRate times per second.
 
-    It also takes OSC input (received()): <prefix>/<id>/mote/rumble switches a remote's rumble motor.
+    It also takes OSC input (received()): <prefix>/<id>/mote/rumble switches a remote's rumble motor, and
+    <prefix>/<id>/mote/speaker/{sine,file,stop} play sounds on its speaker.
  */
 class WiimoteStreamer : public AbstractHubListener
 {
@@ -56,6 +60,9 @@ public:
      */
     void received(const OscReceivedMessage &message);
 
+    /*! \brief Stops all speakers; the hub doesn't call disconnected() for devices still connected on shutdown. */
+    void stopSpeakers();
+
 private:
     using Clock = std::chrono::steady_clock;
 
@@ -76,6 +83,18 @@ private:
         bool isIrSynced = false;              //!< the fusion's yaw refers to the IR anchors
     };
 
+    /*! \brief A remote's speaker. Set up on the first mote/speaker request, and kept until the remote disconnects,
+        so later sounds start without the setup's delay (~0.3 s).
+
+        Used by the receiver's thread (requests) and the device's thread (connect, disconnect), hence the mutex.
+     */
+    struct Speaker {
+        std::mutex mutex;
+        wiimote_t *wm = nullptr; //!< while a Wiimote is connected
+        std::unique_ptr<SoundPlayer> player;
+        std::unique_ptr<WiimoteSpeaker> speaker; //!< plays player; destroyed first
+    };
+
     std::string address(int id, const char *path) const;
     void send(const OscMessage &message);
 
@@ -90,6 +109,9 @@ private:
     void updateWiimote(int id, wiimote_t *wm, bool isSendingContinuous);
     void updateBoard(int id, wiimote_t *wm, bool isSendingContinuous);
     void applyRumble(int id, wiimote_t *wm);
+    /*! \brief Handles <prefix>/<id>/mote/speaker/<command>. Called from the receiver's thread. */
+    void receivedSpeaker(int id, const std::string &command, const OscReceivedMessage &message);
+    static void resetSpeaker(Speaker *speaker);
     /*! \brief Prints why \a message is ignored, once per address. Called from the receiver's thread. */
     void ignore(const OscReceivedMessage &message, const char *reason);
 
@@ -103,5 +125,6 @@ private:
         assignment.
      */
     std::atomic<int> mRumbleRequests[WiimoteHub::sMaxDevices];
+    Speaker mSpeakers[WiimoteHub::sMaxDevices]; //!< kept apart from Device for the same reason
     std::set<std::string> mIgnoredAddresses; //!< receiver's thread only
 };

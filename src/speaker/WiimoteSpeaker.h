@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <thread>
 
@@ -29,12 +30,12 @@ public:
     period, and prints timing statistics.
 
     The rate register is written as documented, but a Wiimote Plus ignores it (measured on macOS): it always plays
-    ~3000 bytes/s, i.e. ADPCM at ~6000 Hz and PCM at ~3000 Hz, which takes 150 reports/s. The link carries ~65, so
-    the thread sends what it can and skips the rest of the source: each report plays at the right pitch, with gaps.
+    ~3000 bytes/s, i.e. ADPCM at ~6000 Hz and PCM at ~3000 Hz, which takes 150 reports/s. When the link can't keep
+    up (macOS: ~67/s; Windows while the radio scans for remotes), the thread sends what it can and skips the rest of
+    the source: each report plays at the right pitch, with gaps.
 
-    On Windows, a write to the remote takes ~15 ms to complete, so audio reports are written asynchronously, with up
-    to Settings::queueDepth in flight. That doesn't raise the ceiling, though: the link carries ~61 reports/s at most
-    (measured on the MS stack), which limits ADPCM to ~2400 Hz and PCM to ~1200 Hz.
+    On Windows, audio reports are written asynchronously, with up to Settings::queueDepth in flight; with the radio
+    free, the link carries the 150 reports/s.
  */
 class WiimoteSpeaker
 {
@@ -61,6 +62,8 @@ public:
         int setupDelayMs = 30; //!< pause after each setup step (register writes aren't acknowledged synchronously)
         int ackReports = 0;    //!< diagnostics: request an ack (0x22) for the setup and this many audio reports
         int startDelayMs = 0;  //!< pause before the setup (experiment: after the connection rumble)
+        //! If set, the setup waits while this returns true: a radio busy with scanning drops audio reports.
+        std::function<bool()> isRadioBusy;
     };
 
     static const char *writerName(Writer writer);

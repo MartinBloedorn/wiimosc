@@ -23,6 +23,7 @@ wiimosc-speaker --target-id 1 --test-mode trigger --file click.wav
 | `--start-delay <ms>` | `0` | Pause before the speaker setup (e.g. until the connection rumble has ended) |
 | `--ack <n>` | `0` | Diagnostics: requests acks (`0x22`) for the setup and the first `n` audio reports, and prints the first 3 audio reports. wiiuse prints the acks if the environment variable `WIIUSE_LOG_ACKS` is set. |
 | `--keep-scanning` | off | Keeps scanning for remotes to pair while the target is connected. By default, scanning pauses then, because an inquiry costs the connected remotes airtime (`WiimoteHub::setPairingPaused`). |
+| `--scan-timeout <seconds>` | `0` (never) | Stops scanning for remotes to pair after this long, so scanning no longer interferes with the audio stream (see the 2026-10-19 Windows findings below, and [Pairing](Pairing.md#scan-timeout)). Here, scanning already pauses while the target is connected, so the timeout matters mostly in `wiimosc-stream` (`mote/speaker/...`). |
 | `--one-two`, `--no-auth`, `--id`, `--shutdown-on-exit`, `--idle-timeout` | | As for `wiimosc-pair` |
 
 Options take their value as `--option value` or `--option=value`.
@@ -141,12 +142,34 @@ Same remote that plays on the Mac (`B8:AE:6E:56:1B:BD`, battery 0.47), measured 
   - **connection rumble:** starting the setup 1 s after connecting (`--start-delay 1000`), after the 300 ms rumble, is still silent.
 - **Conclusion so far:** on Windows the remote accepts the setup and the audio data, yet doesn't play. No difference from the macOS path has been found at the level of the bytes sent.
 
+## Windows, second machine: audible, choppy at first (2026-10-19)
+
+Windows 10, the MS stack, a USB Bluetooth radio (`BC:FC:E7:21:9F:54`), the same remote. **The default sine plays at the right pitch**, judged by ear (no microphone). The first ~10 s were choppy, and the rest was clean.
+
+- **The statistics show the same pattern:** every run had all its resyncs in the first ~10 s, and none after that. For example, a 20 s tone with `--queue 3` had 32 resyncs by 10 s, then none.
+- **Cause: the first scan cycle.** Pausing the scan only takes effect between cycles, and on this machine one cycle takes ~10 s:
+  - the inquiry (3 units, 3.84 s);
+  - an SDP query (`isReachable()`) to the second paired remote, which is switched off. This pages it until the ~5 s page timeout.
+
+  Both tie up the radio, and the connected remote's writes stall for up to ~15 ms.
+- **The evidence:**
+  - Starting the speaker 10 s after connecting (`--start-delay 10000`): 0 resyncs, writes 0.0 ms on average.
+  - The same with `--keep-scanning`: 49 resyncs in 13 s.
+- **Link rate:** with the radio free, the link carries 150 reports/s without effort. Asking for 200/s while the radio was still busy with the scan gave ~150/s, whether the reports were audio (`0x18`) or LEDs (`0x11`). So the rate measured with an apparent ceiling ≈ the speaker's rate was really the scan's doing, not a limit of the link or flow control from the speaker.
+- **Queue depth:** while the radio is busy, `--queue 16` hides most stalls (9 resyncs instead of 32), but doesn't fix the cause.
+- **Fix:** the speaker now waits for the running scan cycle to end before its setup (`WiimoteHub::isPairingIdle()`, `WiimoteSpeaker::Settings::isRadioBusy`). It prints "waiting for the running scan to finish". The default 20 s tone then plays with 0 resyncs, writes 0.1 ms on average, and at most 2.2 ms late.
+- **Open, all tools:** with continuous scanning, every paired remote that's switched off costs a ~5 s page per cycle. This probably also delays input in `wiimosc-stream`. Skipping `isReachable()` while paused, or less often, would help.
+
 ## Implementation
 
 - `src/speaker/WiimoteSpeaker`: speaker setup, encoding (ADPCM / PCM), and the paced sender thread with statistics. On Windows, audio reports bypass wiiuse and go through an `AsyncWriter` on the device handle (each write has its own `OVERLAPPED`; up to `--queue` in flight). Other reports use `wiiuse_send`, which isn't exported by `wiiuse.h` but is part of the static library.
 - `AbstractSoundSource`: the sender pulls samples from it. Returning fewer samples than asked ends a sound, and returning 0 sends nothing.
 - `src/speaker/Audio`: `resample` and `normalize` (portable), and `loadAudioFile` (Media Foundation: `IMFSourceReader`, decoded to float at the file's own rate and channels, then mixed and resampled in our code).
-- `src/speaker/main.cpp`: CLI, `SineSource`, `ClipSource` (restartable, thread-safe), and `SpeakerTester`, the hub listener that runs a `WiimoteSpeaker` while the target is connected. The hub doesn't call `disconnected()` for devices still connected at shutdown, so `main` stops the speaker before `hub.stop()`.
+- `src/speaker/SoundSources`:
+  - `SineSource`;
+  - `SoundPlayer`, which plays one sound at a time (a sine or a clip), switched from any thread. After each sound it plays 0.1 s of silence, so the ADPCM predictor settles, then nothing. `wiimosc-stream` uses it for `mote/speaker/...` ([Streaming](Streaming.md#input---in-port)).
+- Library `speaker`: all of the above, shared by `wiimosc-speaker` and `wiimosc-stream`.
+- `src/speaker/main.cpp`: CLI, `ClipSource` (restartable, thread-safe), and `SpeakerTester`, the hub listener that runs a `WiimoteSpeaker` while the target is connected. The hub doesn't call `disconnected()` for devices still connected at shutdown, so `main` stops the speaker before `hub.stop()`.
 
 ## Status
 
@@ -154,7 +177,7 @@ Same remote that plays on the Mac (`B8:AE:6E:56:1B:BD`, battery 0.47), measured 
 |---|---|
 | Sine, ADPCM and PCM: speaker setup, paced streaming, statistics | ✅ runs without errors, timing as in the table above |
 | File mode: wav, m4a, non-ASCII paths, quits at the end | ✅ runs |
-| **Audible sound** | ⚠️ macOS: right pitch and timing, with a ~60 Hz buzz from the link's limit (measured by microphone). Windows: silent with the old defaults; untested since |
+| **Audible sound** | ⚠️ macOS: right pitch and timing, with a ~60 Hz buzz from the link's limit (measured by microphone). Windows: silent on the first machine; audible on the second, and 0 resyncs once the scan has finished (by ear: pending) |
 | Trigger mode (A press) | ⏳ not yet tested (needs a button press) |
 | mp3 | ⏳ not tested; should work via Media Foundation |
 | Disconnect and reconnect while playing | ⏳ not tested |

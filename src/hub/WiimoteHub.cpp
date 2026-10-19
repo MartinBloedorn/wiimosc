@@ -297,16 +297,29 @@ bool WiimoteHub::start(WiimotePairer::Method method)
     std::printf("removed %d stale device(s)\n", pairer->removeStaleDevices());
 
     // Detached rather than joined, so shutting down doesn't wait for a running inquiry. The thread only touches
-    // its own pairer and the shared flag.
+    // its own pairer and the shared flags.
     *mIsPairing = true;
-    std::thread([pairer = std::move(pairer), method, isPairing = mIsPairing, isPaused = mIsPairingPaused]() {
+    const auto scanEnd = std::chrono::steady_clock::now() + mScanTimeout;
+    std::thread([pairer = std::move(pairer), method, isPairing = mIsPairing, isPaused = mIsPairingPaused,
+                 isScanning = mIsScanning, hasScanEnded = mHasScanEnded, scanEnd,
+                 hasTimeout = mScanTimeout.count() > 0]() {
         while (*isPairing) {
+            // Set before checking the pause, so isPairingIdle() can't miss a scan that is about to start.
+            *isScanning = true;
+            if (hasTimeout && std::chrono::steady_clock::now() >= scanEnd) {
+                *hasScanEnded = true;
+                *isScanning = false;
+                std::printf("scan timeout reached, stopped scanning for remotes to pair\n");
+                return;
+            }
             if (*isPaused) {
+                *isScanning = false;
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 continue;
             }
             for (const auto &device : pairer->scanAndPair(method))
                 std::printf("paired %s [%s]\n", device.name.c_str(), device.address.c_str());
+            *isScanning = false;
         }
     }).detach();
 

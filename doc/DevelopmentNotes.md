@@ -11,8 +11,8 @@ Last updated: 2026-10-19.
 | Windows pairing (SYNC and 1+2 flows, re-pairing, stale cleanup) | ✅ working on hardware (SYNC tested; 1+2 untested) |
 | Device pickup, connect/disconnect, rumble/blink feedback | ✅ working |
 | `wiimosc-pair` (pair & test tool) | ✅ working |
-| `wiimosc-stream` (OSC) | ✅ working: Wiimote buttons/rpy/accel/gyro, Nunchuk, Balance Board (empty board only), battery, status |
-| `wiimosc-speaker` (speaker prototype) | 🧪 macOS: audible, right pitch and timing, with a ~60 Hz buzz from the link's limit (measured by microphone). Windows: untested since the fixes ([Speaker.md](Speaker.md)) |
+| `wiimosc-stream` (OSC) | ✅ working: Wiimote buttons/rpy/accel/gyro, Nunchuk, Balance Board (empty board only), battery, status; OSC input: rumble, speaker (`mote/speaker/{sine,file,stop}`; verified by the statistics, not yet by ear) |
+| `wiimosc-speaker` (speaker prototype) | 🧪 macOS: audible, right pitch and timing, with a ~60 Hz buzz from the link's limit (measured by microphone). Windows (second machine): audible, 0 resyncs once the pairing scan has finished ([Speaker.md](Speaker.md)) |
 | macOS (pairing, input, OSC, fusion) | ✅ works on hardware with a Wiimote Plus (macOS 14.8): SYNC pairing, reconnect by button, streaming, `--shutdown-on-exit`. Input runs at ~67 reports/s instead of ~180 (§9). Board, 1+2, several remotes, speaker untested |
 | Linux | ❌ not implemented; CMake stops with `FATAL_ERROR` |
 | Sensor fusion (`--fusion madg`: fused rpy with yaw, quaternion) | ✅ works on hardware (user-confirmed); gyro scale and accelerometer handling tuned on recordings of both remotes ([Fusion.md](Fusion.md), §6c) |
@@ -41,7 +41,8 @@ src/record/    wiimosc-record: logs a Wiimote Plus's raw motion (and IR) data to
 src/replay/    wiimosc-replay: runs a recording through MotionFusion, prints the orientation as CSV
 data/recordings/  raw motion recordings from real remotes + README (format, content of each)
 src/pairtool/  wiimosc-pair: listener that prints A presses + CLI
-src/speaker/   wiimosc-speaker: WiimoteSpeaker (speaker protocol, paced sender), Audio (decoding, resampling) + CLI
+src/speaker/   library speaker: WiimoteSpeaker (speaker protocol, paced sender), Audio (decoding, resampling),
+               SoundSources (SineSource, SoundPlayer); main.cpp: wiimosc-speaker CLI
 external/wiiuse/  vendored wiiuse 0.16.0, PATCHED (see §5)
 external/Fusion/  xioTechnologies Fusion v1.3.3 (MIT, submodule, unmodified): Madgwick's AHRS in C
 tools/         oscdump.py, oscrate.py, oscsend.py, timestamp.py (testing helpers, see §8)
@@ -59,7 +60,7 @@ cmake --build build -j8
 
 - wiiuse is built as a static subproject (`add_subdirectory(... EXCLUDE_FROM_ALL)`, examples/tests off), with **`WITH_ACCEL_10BIT` on** (the fork's opt-in full accelerometer precision: Wiimote x 10-bit ≈ 0.01 g steps, y/z 9-bit ≈ 0.02 g, Nunchuk 10-bit; 8-bit was 0.04 g; the calibration is read at full precision too). It only changes values, not units or struct layout, so wiimosc doesn't define `WIIUSE_ACCEL_10BIT` itself; don't use wiiuse's raw `accel` or the `*_ACCEL_*SHIFT` macros without it. Button masks (`WIIMOTE_BUTTON_ALL`) exclude the extra bits. `WIIUSE_STATIC` **must** be defined publicly on the target, or `wiiuse.h` declares `dllimport` and linking fails on MSVC.
 - Fusion is built from its `Fusion/` subfolder (library only). **Its headers only compile as C++20** in MSVC (C99 designated initializers), so only the `motionfusion` target is C++20, and only `MadgwickFilter.cpp` includes them. Keep Fusion types out of `src/fusion` headers.
-- Libraries: `pairing` (bthprops, ws2_32), `hub` (pairing + wiiuse, hid), `osc` (ws2_32), `motionfusion` (Fusion; no wiiuse dependency). Executables: `wiimosc-pair`, `wiimosc-stream`, `wiimosc-speaker` (+ Media Foundation, winmm; built with `NOMINMAX`, since `windows.h`'s `min`/`max` macros break `std::min`).
+- Libraries: `pairing` (bthprops, ws2_32), `hub` (pairing + wiiuse, hid), `osc` (ws2_32), `motionfusion` (Fusion; no wiiuse dependency), `speaker` (+ Media Foundation, winmm; built with `NOMINMAX`, since `windows.h`'s `min`/`max` macros break `std::min`). Executables: `wiimosc-pair`, `wiimosc-stream` (uses `speaker`), `wiimosc-speaker`.
 - **macOS**: the `pairing` library is Objective-C++ (`enable_language(OBJCXX)`, ARC) and links IOBluetooth + Foundation; wiiuse links IOKit + CoreFoundation; `wiimosc-speaker` uses AudioToolbox (`Audio_mac.cpp`). `pairing` adds a linker option to every executable that uses it, embedding `src/pairing/Info.plist` (`NSBluetoothAlwaysUsageDescription`): macOS kills processes that access Bluetooth without one.
 - **Linking fails with `LNK1104` while the exe is running** (often the user's own instance). Never kill the user's process; ask, or build the Debug config to check compilation.
 
@@ -90,7 +91,7 @@ Details in [Pairing.md](Pairing.md#macos-implementation). The essentials:
 
 **Why threads**: wiiuse blocks a lot. It has a synchronous handshake with fixed 500 ms sleeps, a synchronous expansion handshake, synchronous register reads with 5 s timeouts, and enabling the MotionPlus sleeps 500 ms. In the original single-loop design, one blocking device froze all others: the stream stopped, and a connection rumble ran for seconds because its "stop" came late.
 
-- **Pairing thread** (detached): `scanAndPair` in a loop. It owns its own `WiimotePairer` and touches no shared state other than stdout and an atomic flag.
+- **Pairing thread** (detached): `scanAndPair` in a loop. It owns its own `WiimotePairer` and touches no shared state other than stdout and atomic flags (pairing, paused, scanning, ended by `--scan-timeout`).
 - **Finder thread**: calls `wiiuse_find` every 1 s. It passes **one free slot** per call, so each device starts as soon as its own handshake is done, then loops again right away. Busy slots belong to their device thread, so the finder gives `wiiuse_find` **placeholder structs** instead: marked `WIIMOTE_STATE_CONNECTED`, with a copy of `dev_path`. That way the open devices are skipped without touching live structs.
 - **One thread per device**: polls only its own `wiimote_t` (`wiiuse_poll(&wm, 1)`; the ~10 ms read timeout paces the loop), runs the feedback, and calls the listener. When the device disconnects, it reports, calls `wiiuse_disconnect` (closes the handle), and frees the slot under `mMutex`. The finder joins a slot's finished thread before reusing the slot.
 - **Listener contract** (`AbstractHubListener`): calls for one id always come from that device's thread, while different ids run concurrently. `id` is **0-based** (the user's request), and ids 0–3 light player LEDs 1–4. `connected` → many `event`/`update` → `disconnected`.
@@ -115,6 +116,7 @@ Details in [Pairing.md](Pairing.md#macos-implementation). The essentials:
 | `io.c` | `wiiuse_wait_report` returns when disconnected; `wiiuse_read_data_sync` gives up after 3 attempts (zeroed output) | Upstream retried forever, a permanent hang when a device stops answering |
 | `os_win.c` | `wiiuse_os_write` zeroes its buffer before copying the report | All reports are written as 22 bytes; short ones (`0x14`, `0x19`, ...) carried stack garbage as padding (macOS sends only the report's own length) |
 | `events.c` | Acks (`0x22`) are printed as `[ack] (id N) report 0xRR error E` if the environment variable `WIIUSE_LOG_ACKS` is set | Diagnostics: shows which output reports a remote accepts (e.g. `wiimosc-speaker --ack`) |
+| `cmake/FindWindowsSDK.cmake` | Also searches the Win10 SDK versions actually installed, besides the module's hardcoded list (newest `10.0.22621.0`) | With only a newer SDK installed (e.g. `10.0.26100.0`), `FindWinHID` found neither `hid.lib` nor `hidsdi.h`, and configuring failed |
 | `events.c`, `wiiuse.h` | Motion+ probe once per connection (`WIIMOTE_STATE_MPLUS_PROBED`) | The probe is a sync read that the Balance Board sometimes doesn't answer, so every status report (battery every 10 s) stalled the board for 5 s. Side effect: a Motion+ *accessory* plugged in after connecting isn't detected until reconnect. |
 
 **Upstream oddities left alone:**
@@ -155,7 +157,8 @@ Details are in [Speaker.md](Speaker.md).
 - **A Wiimote Plus ignores the speaker's rate register: it always plays ~3000 bytes/s (ADPCM ~6000 Hz, PCM ~3000 Hz), i.e. 150 reports/s.** This was measured with the MacBook's microphone and FFTs, and is why the old 2000 Hz default produced only chopped noise.
   - The defaults are now these native rates. The sender skips the source samples it can't send, so pitch and duration are right, with gaps.
   - The PCM volume is silent from `0x80` (WiiBrew: `0xff`); the maximum is now `0x40` for both formats.
-- **The link carries ~61 (Windows) / ~67 (macOS) reports/s at most.** On the MS stack, `WriteFile` takes ~15 ms to complete, and asynchronous writes with several in flight don't raise the ceiling. A pairing inquiry during playback costs throughput, so `wiimosc-speaker` pauses scanning while its target is connected (`WiimoteHub::setPairingPaused`).
+- **Superseded on Windows (2026-10-19, second machine):** with the radio free, the link carries the 150 reports/s. The low rates measured on Windows came from the pairing scan: an inquiry, plus a ~5 s page per paired, switched-off remote. Pausing only takes effect between cycles, so `wiimosc-speaker` now waits for the running cycle (`WiimoteHub::isPairingIdle()`), and all tools take `--scan-timeout`. In `wiimosc-stream` (motion sensing on), scanning caused no dropouts; the reason isn't verified. See Speaker.md.
+- **Earlier: the link carries ~61 (Windows) / ~67 (macOS) reports/s at most.** On the MS stack, `WriteFile` takes ~15 ms to complete, and asynchronous writes with several in flight don't raise the ceiling. A pairing inquiry during playback costs throughput, so `wiimosc-speaker` pauses scanning while its target is connected (`WiimoteHub::setPairingPaused`).
 - Audio reports go through the tool's own overlapped writer on `wm->dev_handle`, concurrently with the device thread's reads. That works because every write has its own `OVERLAPPED` (as in the `write_file_sync` patch).
 - `timeBeginPeriod(1)` is needed for the 16–20 ms report period.
 - On macOS, every `--writer` sends through wiiuse (synchronous `IOHIDDeviceSetReport`); `AsyncWriter` is Windows-only. Decoding uses AudioToolbox (`ExtAudioFile`; checked with aiff and m4a). Untested on hardware.

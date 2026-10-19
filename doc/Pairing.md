@@ -100,6 +100,20 @@ Plugging in or unplugging an expansion also counts. After the timeout, the devic
 - An object of 2 kg or more left on the board keeps it on.
 - Tested with `wiimosc-stream --idle-timeout 0.25`: a resting Wiimote Plus and the empty board both shut down 15 s after connecting, and `oscdump` received `status none` for both.
 
+## Scan timeout
+
+`--scan-timeout <seconds>` (`wiimosc-pair`, `wiimosc-stream`, `wiimosc-speaker`; `WiimoteHub::setScanTimeout`) stops scanning for remotes to pair that long after the start. The default is 0, which means never.
+
+- **Why: less interference with the audio stream.** The speaker needs a steady 150 reports/s, and a scan cycle ties up the radio while it runs, which stalls the connected remotes' writes by up to ~15–23 ms.
+  - Measured with `wiimosc-speaker`: a 13 s tone had 49–67 dropouts (resyncs) with scanning, and 0 without ([Speaker](Speaker.md#windows-second-machine-audible-choppy-at-first-2026-10-19)).
+  - Without the timeout, scanning runs for as long as the tool does. So a remote paired once can play sound cleanly only once the scan stops.
+  - Input streaming is affected less, since input isn't paced as strictly.
+- **What a cycle does:** an inquiry (~4 s), plus a ~5 s page for each paired remote that's switched off.
+- **Timing:** the timeout is checked between scan cycles, so a running cycle finishes first. With `--scan-timeout 5`, scanning stopped at 9.4 s.
+- **The terminal** prints `scan timeout reached, stopped scanning for remotes to pair`.
+- **After the timeout:** the finder still picks up devices that connect by themselves (SYNC-paired remotes on a button press, the Balance Board). Only new pairings, and re-pairing a remote held at SYNC or 1+2, need the scan.
+- `WiimoteHub::isPairingIdle()` is true once the scan has ended. `wiimosc-speaker` waits for that before its setup.
+
 ## wiiuse patches
 
 `external/wiiuse` is modified locally; every change is marked with `wiimosc patch`.
@@ -116,6 +130,8 @@ Plugging in or unplugging an expansion also counts. After the timeout, the devic
 - `os_win.c`, reads: after a read timeout, `CancelIo` didn't wait for the cancellation, so a late completion could write into the caller's buffer after it was gone. Now waits with `GetOverlappedResult(..., TRUE)`.
 - `io.c`: `wiiuse_wait_report` returns once the device is disconnected, and `wiiuse_read_data_sync` gives up after 3 attempts (it used to retry forever, which hangs when a device stops answering). On failure, its output is zeroed.
 - `events.c` / `wiiuse.h`: the Motion+ probe runs only once per connection (`WIIMOTE_STATE_MPLUS_PROBED`), instead of on every status report for devices without a Motion+. It's a synchronous read, and the battery status requests every 10 s triggered it each time. Side effect: a Motion+ *accessory* plugged in after connecting isn't detected until the remote reconnects.
+
+**Build: newer Windows SDKs.** `cmake/FindWindowsSDK.cmake` only searched a hardcoded list of Win10 SDK versions, the newest being `10.0.22621.0`. On a machine with only `10.0.26100.0`, `FindWinHID` failed (`Could NOT find WinHID`), although `hid.lib` and `hidsdi.h` were there. The library and include lookups now also search the `10.*` versions installed, after the list, so machines that already worked search in the same order.
 
 **macOS backend (`os_mac_hid.c`, new).** wiiuse's own macOS backend (`os_mac/`, IOBluetooth inquiry + L2CAP) is left in the tree but no longer built.
 

@@ -37,13 +37,15 @@ private:
 void printUsage()
 {
     std::printf("usage: wiimosc-pair [--one-two | --no-auth] [--id <id>=<address> ...] [--shutdown-on-exit]\n"
-                "                    [--idle-timeout <minutes>]\n"
+                "                    [--idle-timeout <minutes>] [--scan-timeout <seconds>]\n"
                 "  default              expects the red SYNC button (permanent pairing, works for the Balance Board)\n"
                 "  --one-two            expects 1+2 to be held (temporary pairing)\n"
                 "  --no-auth            skips authentication, only enables the HID service\n"
                 "  --shutdown-on-exit   switches off all connected devices when quitting\n"
                 "  --idle-timeout <min> switches off devices that have been idle this long (default 0 = never);\n"
                 "                       counts buttons and Balance Board weight (motion isn't read by this tool)\n"
+                "  --scan-timeout <s>   stops scanning for remotes to pair after this long (default 0 = never);\n"
+                "                       remotes paired before still reconnect\n"
                 "  --id <id>=<address>  always gives the device with this Bluetooth address this id (0-%d),\n"
                 "                       e.g. --id 0=B8:AE:6E:56:1B:BD; repeatable\n",
                 WiimoteHub::sMaxDevices - 1);
@@ -69,6 +71,13 @@ int main(int argc, char **argv)
                 return 1;
             }
             hub.setIdleTimeout(minutes);
+        } else if (std::strcmp(argv[i], "--scan-timeout") == 0 && i + 1 < argc) {
+            const double seconds = std::atof(argv[++i]);
+            if (seconds < 0.0) {
+                printUsage();
+                return 1;
+            }
+            hub.setScanTimeout(seconds);
         } else if (std::strcmp(argv[i], "--shutdown-on-exit") == 0) {
             hub.setShutdownOnExit(true);
         } else if (std::strcmp(argv[i], "--no-auth") == 0) {

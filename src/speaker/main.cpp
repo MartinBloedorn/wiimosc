@@ -1,6 +1,7 @@
 /*! \brief Speaker test tool: pairs devices like wiimosc-pair, and plays a sine, a file, or a clip on one Wiimote. */
 
 #include "Audio.h"
+#include "SoundSources.h"
 #include "WiimoteSpeaker.h"
 #include "hub/WiimoteHub.h"
 
@@ -14,6 +15,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -23,35 +25,11 @@ namespace {
 
 std::atomic<bool> sIsRunning{true};
 
-const double sPi = 3.14159265358979323846;
-const float sPeak = 0.9f;         //!< level for sine and (normalized) files
 const double sClipTailSeconds = 0.1; //!< silence after a clip, lets the ADPCM predictor settle back to 0
 
 const int sSweepStepMs = 6000;      //!< how long each sweep variant plays
 
 enum class TestMode { Sine, File, Trigger, Sweep };
-
-class SineSource : public AbstractSoundSource
-{
-public:
-    SineSource(double frequency, int sampleRate)
-        : mIncrement(2.0 * sPi * frequency / sampleRate)
-    {
-    }
-
-    int read(float *samples, int count) override
-    {
-        for (int i = 0; i < count; ++i) {
-            samples[i] = static_cast<float>(sPeak * std::sin(mPhase));
-            mPhase = std::fmod(mPhase + mIncrement, 2.0 * sPi);
-        }
-        return count;
-    }
-
-private:
-    double mIncrement;
-    double mPhase = 0.0;
-};
 
 /*! \brief Plays a clip from the start on each restart(); silent otherwise. */
 class ClipSource : public AbstractSoundSource
@@ -141,6 +119,9 @@ public:
             mIsTargetConnected = false;
         }
     }
+
+    /*! \brief Makes speakers started from now on wait while \a isRadioBusy returns true, before their setup. */
+    void setRadioBusyCheck(std::function<bool()> isRadioBusy) { mSettings.isRadioBusy = std::move(isRadioBusy); }
 
     /*! \brief True while the target remote is connected (and is a Wiimote). */
     bool isTargetConnected() const { return mIsTargetConnected; }
@@ -256,6 +237,7 @@ void printUsage()
         "  --one-two, --no-auth   pairing method, as for wiimosc-pair\n"
         "  --shutdown-on-exit     switches off all connected devices when quitting\n"
         "  --idle-timeout <min>   switches off devices that have been idle this long (default 0 = never)\n"
+        "  --scan-timeout <s>     stops scanning for remotes to pair after this long (default 0 = never)\n"
         "  --id <id>=<address>    always gives the device with this Bluetooth address this id; repeatable\n"
         "Options take their value as \"--option value\" or \"--option=value\".\n");
 }
@@ -277,6 +259,7 @@ int main(int argc, char **argv)
     bool isShuttingDownOnExit = false;
     bool isKeepingScanning = false;
     double idleTimeout = 0.0;
+    double scanTimeout = 0.0;
 
     for (int i = 1; i < argc; ++i) {
         std::string name = argv[i];
@@ -303,6 +286,9 @@ int main(int argc, char **argv)
         } else if (name == "--idle-timeout" && takeValue()) {
             idleTimeout = std::atof(value.c_str());
             isValid = idleTimeout >= 0.0;
+        } else if (name == "--scan-timeout" && takeValue()) {
+            scanTimeout = std::atof(value.c_str());
+            isValid = scanTimeout >= 0.0;
         } else if (name == "--keep-scanning") {
             isKeepingScanning = true;
         } else if (name == "--shutdown-on-exit") {
@@ -390,7 +376,7 @@ int main(int argc, char **argv)
             std::fprintf(stderr, "%s: %s\n", path.c_str(), error.c_str());
             return 1;
         }
-        normalize(&clipSamples, sPeak);
+        normalize(&clipSamples, sSoundPeak);
         std::printf("loaded %s: %.1f s at %d Hz\n", path.c_str(),
                     static_cast<double>(clipSamples.size()) / settings.sampleRate, settings.sampleRate);
         clipSamples.resize(clipSamples.size() + static_cast<size_t>(sClipTailSeconds * settings.sampleRate), 0.0f);
@@ -414,8 +400,11 @@ int main(int argc, char **argv)
     std::signal(SIGBREAK, [](int) { sIsRunning = false; }); // Ctrl+Break (Windows)
 #endif
 
+    if (!isKeepingScanning)
+        tester.setRadioBusyCheck([&hub] { return !hub.isPairingIdle(); });
     hub.setShutdownOnExit(isShuttingDownOnExit);
     hub.setIdleTimeout(idleTimeout);
+    hub.setScanTimeout(scanTimeout);
     if (!hub.start(method))
         return 1;
     std::printf("scanning, press %s on a remote to pair it; playing on [%d] once it connects%s (Ctrl+C to quit)\n",

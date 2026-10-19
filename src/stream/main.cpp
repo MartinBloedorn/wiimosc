@@ -34,8 +34,10 @@ void printUsage()
                 "  --host <host>      OSC target, name, IPv4 or broadcast address (default 127.0.0.1)\n"
                 "  --port <port>      OSC target port (default 4321)\n"
                 "  --prefix <prefix>  address prefix (default \"wiimosc\")\n"
-                "  --in-port <port>   receive OSC on this UDP port, on all interfaces: <prefix>/<id>/mote/rumble\n"
-                "                     (number, > 0.5 = on) (default: off)\n"
+                "  --in-port <port>   receive OSC on this UDP port, on all interfaces (default: off):\n"
+                "                     <prefix>/<id>/mote/rumble (number, > 0.5 = on),\n"
+                "                     <prefix>/<id>/mote/speaker/sine (frequency, Hz), .../speaker/file (path),\n"
+                "                     .../speaker/stop\n"
                 "  --max-rate <hz>    max. rate of continuous values per device, 0 = unlimited (default 0)\n"
                 "  --gyro             enable the MotionPlus gyro on supporting remotes (hides a Nunchuk)\n"
                 "  --fusion <madg|off>\n"
@@ -53,6 +55,9 @@ void printUsage()
                 "  --shutdown-on-exit switch off all connected devices when quitting\n"
                 "  --idle-timeout <minutes>\n"
                 "                     switch off devices that have been idle this long (default 0 = never)\n"
+                "  --scan-timeout <seconds>\n"
+                "                     stop scanning for remotes to pair after this long, freeing the radio for\n"
+                "                     the connected ones, e.g. for the speaker (default 0 = never)\n"
                 "  --id <id>=<addr>   always give the device with this Bluetooth address this id (0-%d),\n"
                 "                     e.g. --id 0=B8:AE:6E:56:1B:BD; repeatable\n",
                 WiimoteHub::sMaxDevices - 1);
@@ -71,6 +76,7 @@ int main(int argc, char **argv)
     std::vector<std::string> fixedIds;
     bool isShuttingDownOnExit = false;
     double idleTimeout = 0.0;
+    double scanTimeout = 0.0;
 
     for (int i = 1; i < argc; ++i) {
         const bool hasValue = i + 1 < argc;
@@ -114,6 +120,8 @@ int main(int argc, char **argv)
             method = WiimotePairer::Method::OneTwo;
         } else if (std::strcmp(argv[i], "--idle-timeout") == 0 && hasValue) {
             idleTimeout = std::atof(argv[++i]);
+        } else if (std::strcmp(argv[i], "--scan-timeout") == 0 && hasValue) {
+            scanTimeout = std::atof(argv[++i]);
         } else if (std::strcmp(argv[i], "--shutdown-on-exit") == 0) {
             isShuttingDownOnExit = true;
         } else if (std::strcmp(argv[i], "--no-auth") == 0) {
@@ -125,7 +133,7 @@ int main(int argc, char **argv)
             return 1;
         }
     }
-    if (port <= 0 || port > 65535 || options.maxRate < 0 || idleTimeout < 0.0) {
+    if (port <= 0 || port > 65535 || options.maxRate < 0 || idleTimeout < 0.0 || scanTimeout < 0.0) {
         printUsage();
         return 1;
     }
@@ -168,6 +176,7 @@ int main(int argc, char **argv)
     }
     hub.setShutdownOnExit(isShuttingDownOnExit);
     hub.setIdleTimeout(idleTimeout);
+    hub.setScanTimeout(scanTimeout);
     if (!hub.start(method))
         return 1;
     std::printf("streaming to %s:%d as %s/<id>/..., press %s on a remote to pair it (Ctrl+C to quit)\n",
@@ -181,6 +190,7 @@ int main(int argc, char **argv)
     while (sIsRunning)
         WiimotePairer::processEvents(100);
     receiver.stop();
+    streamer.stopSpeakers(); // the hub doesn't call disconnected() for devices still connected on shutdown
     hub.stop();
     return 0;
 }
