@@ -93,6 +93,12 @@ public:
     /*! \brief Opens the Bluetooth radio, and starts pairing and picking up devices in the background. */
     bool start(WiimotePairer::Method method);
 
+    /*! \brief Pauses or resumes scanning for new remotes to pair (connected remotes are picked up regardless).
+
+        An inquiry ties up the radio, which costs the connected remotes throughput; a running inquiry finishes first.
+     */
+    void setPairingPaused(bool isPaused) { *mIsPairingPaused = isPaused; }
+
     /*! \brief Prints the connected devices (as "--id" arguments, to keep their ids), stops picking up devices, and
         waits for the device threads to finish.
 
@@ -128,4 +134,5 @@ private:
     bool mIsShuttingDownOnExit = false;
     std::chrono::milliseconds mIdleTimeout{0}; //!< 0: never
     std::shared_ptr<std::atomic<bool>> mIsPairing = std::make_shared<std::atomic<bool>>(false);
+    std::shared_ptr<std::atomic<bool>> mIsPairingPaused = std::make_shared<std::atomic<bool>>(false);
 };

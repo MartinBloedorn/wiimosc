@@ -2,3 +2,7 @@ build/
 .vs/
 __pycache__/
 *.pyc
+
+# speaker microphone test recordings
+tools/speakermic/out/
+*.wav

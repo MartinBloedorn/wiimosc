@@ -12,7 +12,7 @@ Last updated: 2026-10-19.
 | Device pickup, connect/disconnect, rumble/blink feedback | ✅ working |
 | `wiimosc-pair` (pair & test tool) | ✅ working |
 | `wiimosc-stream` (OSC) | ✅ working: Wiimote buttons/rpy/accel/gyro, Nunchuk, Balance Board (empty board only), battery, status |
-| `wiimosc-speaker` (speaker prototype) | 🧪 streams without errors at ≤ 60 reports/s; sound quality not yet confirmed by ear ([Speaker.md](Speaker.md)) |
+| `wiimosc-speaker` (speaker prototype) | 🧪 macOS: audible, right pitch and timing, with a ~60 Hz buzz from the link's limit (measured by microphone). Windows: untested since the fixes ([Speaker.md](Speaker.md)) |
 | macOS (pairing, input, OSC, fusion) | ✅ works on hardware with a Wiimote Plus (macOS 14.8): SYNC pairing, reconnect by button, streaming, `--shutdown-on-exit`. Input runs at ~67 reports/s instead of ~180 (§9). Board, 1+2, several remotes, speaker untested |
 | Linux | ❌ not implemented; CMake stops with `FATAL_ERROR` |
 | Sensor fusion (`--fusion madg`: fused rpy with yaw, quaternion) | ✅ works on hardware (user-confirmed); gyro scale and accelerometer handling tuned on recordings of both remotes ([Fusion.md](Fusion.md), §6c) |
@@ -149,7 +149,10 @@ The address reference is in [Streaming.md](Streaming.md).
 Details are in [Speaker.md](Speaker.md).
 
 - wiiuse has no speaker support (it only reads the "speaker enabled" status bit). The protocol (reports `0x14`/`0x19`/`0x18`, the registers at `0x04a20001`–`09`, Yamaha ADPCM) is implemented in `WiimoteSpeaker`.
-- **On the MS stack, `WriteFile` to a remote takes ~15 ms to complete, and the link carries ~61 reports/s at most.** Asynchronous writes with several in flight don't raise that. WiiBrew's ADPCM at 3000 Hz needs 75 reports/s and is choppy; the defaults use 50 reports/s (ADPCM 2000 Hz, PCM 1000 Hz).
+- **A Wiimote Plus ignores the speaker's rate register: it always plays ~3000 bytes/s (ADPCM ~6000 Hz, PCM ~3000 Hz), i.e. 150 reports/s.** This was measured with the MacBook's microphone and FFTs, and is why the old 2000 Hz default produced only chopped noise.
+  - The defaults are now these native rates. The sender skips the source samples it can't send, so pitch and duration are right, with gaps.
+  - The PCM volume is silent from `0x80` (WiiBrew: `0xff`); the maximum is now `0x40` for both formats.
+- **The link carries ~61 (Windows) / ~67 (macOS) reports/s at most.** On the MS stack, `WriteFile` takes ~15 ms to complete, and asynchronous writes with several in flight don't raise the ceiling. A pairing inquiry during playback costs throughput, so `wiimosc-speaker` pauses scanning while its target is connected (`WiimoteHub::setPairingPaused`).
 - Audio reports go through the tool's own overlapped writer on `wm->dev_handle`, concurrently with the device thread's reads. That works because every write has its own `OVERLAPPED` (as in the `write_file_sync` patch).
 - `timeBeginPeriod(1)` is needed for the 16–20 ms report period.
 - On macOS, every `--writer` sends through wiiuse (synchronous `IOHIDDeviceSetReport`); `AsyncWriter` is Windows-only. Decoding uses AudioToolbox (`ExtAudioFile`; checked with aiff and m4a). Untested on hardware.
@@ -197,4 +200,4 @@ The full reference (design, conventions, measurements, tuning method, open work)
 - Without `--id`, a device that reconnects may get a different id (lowest free one).
 - Each paired but switched-off remote adds ~5 s to every pairing scan cycle (presence probe); the probes could run in parallel.
 - Shutdown joins device threads; a thread stuck in a sync read can delay exit by up to ~15 s (3 × 5 s).
-- **Speaker**: not yet confirmed by ear (ADPCM nibble order and volume range come from WiiBrew and Dolphin). Untested: trigger mode, mp3, reconnecting while playing, and whether the ~61 reports/s ceiling depends on the adapter, the stack, or other devices streaming input.
+- **Speaker**: buzzes at the link's report rate (~44% duty), since the speaker needs 150 reports/s; getting the link out of sniff mode might help (not attempted). Untested: the new defaults on Windows, an original (non-Plus) Wiimote (might honour the rate register), trigger mode, mp3, reconnecting while playing.

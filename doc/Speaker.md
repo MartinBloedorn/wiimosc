@@ -13,13 +13,14 @@ wiimosc-speaker --target-id 1 --test-mode trigger --file click.wav
 | `--target-id <id>` | `0` | Remote to play on. Other devices connect as usual, and are ignored. Combine with `--id` to make the target a specific remote. |
 | `--test-mode` | `sine` | `sine`: a sine wave until Ctrl+C. `file`: plays `--file` once, then quits. `trigger`: plays `--file` from the start on every press of A (restarting it if it's still playing). `sweep`: the sine with each `--writer`, with 30 and 200 ms `--setup-delay` (6 variants of 6 s, announced), then quits. |
 | `--file <path>` | | Audio file, anything the OS can decode (wav, mp3, m4a/AAC, aiff; wma on Windows). Decoded and resampled up front, mixed down to mono, and normalized. |
-| `--frequency <hz>` | `440` | Sine frequency |
+| `--frequency <hz>` | `1000` | Sine frequency (the speaker barely reproduces much below ~600 Hz) |
 | `--format adpcm\|pcm` | `adpcm` | 4-bit Yamaha ADPCM (40 samples per report) or 8-bit signed PCM (20 samples per report) |
-| `--rate <hz>` | `2000` (ADPCM), `1000` (PCM) | Sample rate. Both defaults need 50 reports/s, see below. |
-| `--volume <0-1>` | `1` | Speaker volume register, as a fraction of its maximum (`0x40` for ADPCM, `0xff` for PCM) |
+| `--rate <hz>` | `6000` (ADPCM), `3000` (PCM) | Sample rate. The defaults are what a Wiimote Plus actually plays, whatever is configured; see "Microphone measurements". |
+| `--volume <0-1>` | `1` | Speaker volume register, as a fraction of `0x40` (more is no louder; PCM is silent from `0x80`) |
 | `--writer async\|wiiuse\|setreport` | `async` | How audio reports are sent (experiment, see "Debugging") |
 | `--queue <1-16>` | `3` | Audio reports in flight at once with `async`. `1` waits for each write to complete. |
 | `--setup-delay <ms>` | `30` | Pause after each speaker setup step |
+| `--keep-scanning` | off | Keeps scanning for remotes to pair while the target is connected. By default, scanning pauses then, because an inquiry costs the connected remotes airtime (`WiimoteHub::setPairingPaused`). |
 | `--one-two`, `--no-auth`, `--id`, `--shutdown-on-exit`, `--idle-timeout` | | As for `wiimosc-pair` |
 
 Options take their value as `--option value` or `--option=value`.
@@ -89,6 +90,38 @@ Second round, after the user reported a **faint hiss but no tone** in all of: de
 
 Still open: the audio reports themselves can't be seen in the log, since they bypass wiiuse. The rate divisor for 2000 Hz (`0x0bb8`) isn't one of WiiBrew's example values. A cross-check with Dolphin (real Wiimote, speaker enabled) would show whether the remotes and the Bluetooth stack can play sound at all.
 
+## Microphone measurements (macOS)
+
+**The finding:** a Wiimote Plus ignores the rate register. It always plays ~3000 bytes/s: ADPCM at ~6000 Hz and PCM at ~3000 Hz, i.e. 150 reports/s. The link carries ~67/s, so the speaker plays ~44% of the time. The rest is gaps, heard as a ~60 Hz buzz. This explains the earlier "chopped noise".
+
+**How it was measured:** the remote sat 10 cm from the MacBook's built-in microphone, recorded with `ffmpeg -f avfoundation`, and the recordings were analyzed with numpy FFTs, using the scripts in [tools/speakermic](../tools/speakermic/README.md).
+
+- **The rate register has no effect.**
+  - Sending one report every 100 ms with a 4-sample sine period gives isolated bursts.
+    - PCM: 760 Hz, so ~3040 samples/s; the bursts last ~7 ms.
+    - ADPCM: 1488 Hz, so ~5950 samples/s.
+  - Rate register values `0x5dc0`, `0x1f40` (WiiBrew's 1500 Hz example), `0x0fa0`, `0xea60` and `0x3a98` all gave the same pitch. So did:
+    - libogc's trailing bytes `0C 0E`;
+    - writing the rate bytes separately;
+    - resetting `0xa20009`;
+    - re-enabling after the configuration;
+    - libogc's mute-before-enable order.
+  - All speaker register writes are acknowledged with error 0.
+- **Why the old defaults made noise:** ADPCM at 2000 Hz played each report 3× too fast, then went silent until the next one. The output had no energy at the sine's frequency, only bursts exciting the speaker's resonances (~650, ~930, ~1200 Hz). Silence (all-zero samples, or no reports) is silent.
+- **Volume:** the register is applied, but:
+  - for PCM it saturates around `0x40` and is **silent from `0x80`** (WiiBrew gives `0xff` as the maximum). That made `--format pcm` silent at the old default.
+  - ADPCM at `0x40` is ~11 dB louder than PCM.
+  - The maximum is now `0x40` for both formats.
+- **Link rate:** `IOHIDDeviceSetReport` returns after ~1 ms while the driver's queue has room. It blocks once the queue is full, ~11 ms on average, which gives ~67 reports/s. That's close to Windows' ~61.
+- **Inquiry:** the pairing inquiry (restarted every ~4 s) caused resyncs. Scanning now pauses while the target is connected; `--keep-scanning` restores it.
+- **Response:** the speaker barely reproduces anything much below ~600 Hz; 440 Hz comes out as mostly buzz. The default sine is now 1 kHz.
+
+**Current behaviour:**
+- **Native rates:** the defaults are now the native rates, 6000 Hz ADPCM and 3000 Hz PCM.
+- **Falling behind:** when the sender falls behind, it skips the missed samples in the source. Each report therefore plays at the right pitch, and a sound keeps its duration.
+- **Measured result:** a 3 s file (800 Hz / silence / 1200 Hz) played back with the right pitches and timing, with ~50% of the energy in the tone and the rest in the gap buzz.
+- **Remaining limit:** the buzz is the link's limit. Removing it needs ~150 reports/s, possibly by getting the link out of sniff mode (not attempted).
+
 ## Implementation
 
 - `src/speaker/WiimoteSpeaker`: speaker setup, encoding (ADPCM / PCM), and the paced sender thread with statistics. On Windows, audio reports bypass wiiuse and go through an `AsyncWriter` on the device handle (each write has its own `OVERLAPPED`; up to `--queue` in flight). Other reports use `wiiuse_send`, which isn't exported by `wiiuse.h` but is part of the static library.
@@ -102,7 +135,7 @@ Still open: the audio reports themselves can't be seen in the log, since they by
 |---|---|
 | Sine, ADPCM and PCM: speaker setup, paced streaming, statistics | ✅ runs without errors, timing as in the table above |
 | File mode: wav, m4a, non-ASCII paths, quits at the end | ✅ runs |
-| **Audible sound** | ❌ silent on two remotes in sine and trigger mode (first version), see "Debugging" below |
+| **Audible sound** | ⚠️ macOS: right pitch and timing, with a ~60 Hz buzz from the link's limit (measured by microphone). Windows: silent with the old defaults; untested since |
 | Trigger mode (A press) | ⏳ not yet tested (needs a button press) |
 | mp3 | ⏳ not tested; should work via Media Foundation |
 | Disconnect and reconnect while playing | ⏳ not tested |

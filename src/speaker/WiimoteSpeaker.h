@@ -24,9 +24,13 @@ public:
 
 /*! \brief Streams audio to a Wiimote's speaker, on its own thread.
 
-    The speaker plays 4-bit Yamaha ADPCM (40 samples per report) or 8-bit signed PCM (20 samples per report) at a
-    configurable rate. It has a tiny buffer and no flow control, so reports have to arrive at a steady pace: the
-    thread sends one report per period (e.g. every 20 ms for ADPCM at 2000 Hz), and prints timing statistics.
+    The speaker plays 4-bit Yamaha ADPCM (40 samples per report) or 8-bit signed PCM (20 samples per report). It has
+    a tiny buffer and no flow control, so reports have to arrive at a steady pace: the thread sends one report per
+    period, and prints timing statistics.
+
+    The rate register is written as documented, but a Wiimote Plus ignores it (measured on macOS): it always plays
+    ~3000 bytes/s, i.e. ADPCM at ~6000 Hz and PCM at ~3000 Hz, which takes 150 reports/s. The link carries ~65, so
+    the thread sends what it can and skips the rest of the source: each report plays at the right pitch, with gaps.
 
     On Windows, a write to the remote takes ~15 ms to complete, so audio reports are written asynchronously, with up
     to Settings::queueDepth in flight. That doesn't raise the ceiling, though: the link carries ~61 reports/s at most
@@ -49,8 +53,8 @@ public:
 
     struct Settings {
         Format format = Format::Adpcm;
-        int sampleRate = 2000;
-        float volume = 1.0f; //!< 0..1, of the format's maximum register value (0x40 for ADPCM, 0xff for PCM)
+        int sampleRate = 6000; //!< the speaker's native rate for ADPCM, see the class description
+        float volume = 1.0f;   //!< 0..1, of the volume register's maximum (0x40)
         int queueDepth = 3;  //!< audio reports in flight at once (Writer::Async); 1 waits for each write
         Writer writer = Writer::Async;
         int setupDelayMs = 30; //!< pause after each setup step (register writes aren't acknowledged synchronously)
@@ -86,6 +90,7 @@ private:
 
     void run();
     bool sendAudio(const uint8_t *data);
+    void skip(int count);
     void setUp();
     void switchOff();
     bool sendReport(uint8_t reportType, const uint8_t *data, int length);

@@ -120,6 +120,7 @@ public:
             std::printf("[%d] the Balance Board has no speaker\n", id);
             return;
         }
+        mIsTargetConnected = true;
         if (mMode == TestMode::Sweep) {
             stopSweep();
             mIsSweeping = true;
@@ -135,9 +136,14 @@ public:
 
     void disconnected(int id, DeviceType) override
     {
-        if (id == mTargetId)
+        if (id == mTargetId) {
             stop();
+            mIsTargetConnected = false;
+        }
     }
+
+    /*! \brief True while the target remote is connected (and is a Wiimote). */
+    bool isTargetConnected() const { return mIsTargetConnected; }
 
     void event(int id, wiimote_t *wm) override
     {
@@ -213,6 +219,7 @@ private:
     std::thread mSweepThread;
     std::atomic<bool> mIsSweeping{false};
     std::atomic<bool> mHasSweepFinished{false};
+    std::atomic<bool> mIsTargetConnected{false};
 
     int mTargetId;
     TestMode mMode;
@@ -234,13 +241,15 @@ void printUsage()
         "                         sweep:   plays the sine for 6 s with each writer, with a normal and a slow\n"
         "                                  setup (6 variants, announced), then quits\n"
         "  --file <path>          audio file (wav, mp3, m4a, ... anything Windows can decode)\n"
-        "  --frequency <hz>       sine frequency (default 440)\n"
+        "  --frequency <hz>       sine frequency (default 1000)\n"
         "  --format adpcm|pcm     4-bit Yamaha ADPCM (default) or 8-bit PCM\n"
-        "  --rate <hz>            sample rate (default 2000 for ADPCM, 1000 for PCM: 50 reports/s)\n"
-        "  --volume <0-1>         speaker volume (default 1: 0x40 for ADPCM, 0xff for PCM)\n"
+        "  --rate <hz>            sample rate (default 6000 for ADPCM, 3000 for PCM: the speaker's own rates)\n"
+        "  --volume <0-1>         speaker volume (default 1: 0x40)\n"
         "  --writer <writer>      how audio reports are sent: async (default), wiiuse, setreport\n"
         "  --queue <1-16>         audio reports in flight at once for async (default 3)\n"
         "  --setup-delay <ms>     pause after each speaker setup step (default 30)\n"
+        "  --keep-scanning        keeps scanning for remotes to pair while the target is connected (by default,\n"
+        "                         scanning pauses then: an inquiry costs the link throughput)\n"
         "  --one-two, --no-auth   pairing method, as for wiimosc-pair\n"
         "  --shutdown-on-exit     switches off all connected devices when quitting\n"
         "  --idle-timeout <min>   switches off devices that have been idle this long (default 0 = never)\n"
@@ -257,12 +266,13 @@ int main(int argc, char **argv)
     int targetId = 0;
     TestMode mode = TestMode::Sine;
     std::string path;
-    double frequency = 440.0;
+    double frequency = 1000.0; // the speaker barely reproduces much below ~600 Hz
     int rate = 0;
     WiimoteSpeaker::Settings settings;
     WiimotePairer::Method method = WiimotePairer::Method::SyncButton;
     std::vector<std::string> fixedIds;
     bool isShuttingDownOnExit = false;
+    bool isKeepingScanning = false;
     double idleTimeout = 0.0;
 
     for (int i = 1; i < argc; ++i) {
@@ -290,6 +300,8 @@ int main(int argc, char **argv)
         } else if (name == "--idle-timeout" && takeValue()) {
             idleTimeout = std::atof(value.c_str());
             isValid = idleTimeout >= 0.0;
+        } else if (name == "--keep-scanning") {
+            isKeepingScanning = true;
         } else if (name == "--shutdown-on-exit") {
             isShuttingDownOnExit = true;
         } else if (name == "--no-auth") {
@@ -352,7 +364,7 @@ int main(int argc, char **argv)
             return 1;
         }
     }
-    settings.sampleRate = rate > 0 ? rate : (settings.format == WiimoteSpeaker::Format::Adpcm ? 2000 : 1000);
+    settings.sampleRate = rate > 0 ? rate : (settings.format == WiimoteSpeaker::Format::Adpcm ? 6000 : 3000);
     const bool isPlayingSine = mode == TestMode::Sine || mode == TestMode::Sweep;
     if (!isPlayingSine && path.empty()) {
         std::fprintf(stderr, "--test-mode file and trigger need --file\n");
@@ -399,8 +411,16 @@ int main(int argc, char **argv)
                 method == WiimotePairer::Method::SyncButton ? "SYNC" : "1+2", targetId,
                 mode == TestMode::Trigger ? ", on every press of A" : "");
 
-    while (sIsRunning && !(mode == TestMode::File && clip.hasFinished()) && !tester.hasSweepFinished())
+    bool isPaused = false;
+    while (sIsRunning && !(mode == TestMode::File && clip.hasFinished()) && !tester.hasSweepFinished()) {
+        const bool isPausing = !isKeepingScanning && tester.isTargetConnected();
+        if (isPausing != isPaused) {
+            isPaused = isPausing;
+            hub.setPairingPaused(isPaused);
+            std::printf("%s scanning for remotes\n", isPaused ? "paused" : "resumed");
+        }
         WiimotePairer::processEvents(100);
+    }
     if (mode == TestMode::File && clip.hasFinished())
         std::printf("[%d] file finished\n", targetId);
     tester.stop();

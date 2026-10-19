@@ -186,7 +186,10 @@ void WiimoteSpeaker::run()
             mStatistics = Statistics{};
             next = playStart = lastPrint = now;
         } else if (now - next > period) {
-            ++mStatistics.resyncs; // fell behind: don't burst to catch up, the speaker's buffer is tiny
+            // Fell behind: don't burst to catch up, the speaker's buffer is tiny. Skip the missed samples instead,
+            // so a sound keeps its duration even when the link can't carry all of it.
+            ++mStatistics.resyncs;
+            skip(static_cast<int>((now - next) / period) * count);
             next = now;
         } else {
             mStatistics.maxLateMs = std::max(mStatistics.maxLateMs, milliseconds(now - next));
@@ -229,7 +232,7 @@ void WiimoteSpeaker::setUp()
     // The rate register holds a divisor; the volume's range differs per format.
     const double dividend = isAdpcm ? 6000000.0 : 12000000.0;
     const int rateValue = std::clamp(static_cast<int>(std::lround(dividend / mSettings.sampleRate)), 1, 0xffff);
-    const int maxVolume = isAdpcm ? 0x40 : 0xff; // ranges per WiiBrew
+    const int maxVolume = 0x40; // more is no louder for PCM, and silent from 0x80 (measured; WiiBrew says 0xff)
     const int volume = std::clamp(static_cast<int>(std::lround(mSettings.volume * maxVolume)), 0, maxVolume);
 
     const uint8_t on = 0x04;
@@ -305,6 +308,17 @@ bool WiimoteSpeaker::sendAudio(const uint8_t *data)
 #else
     return sendReport(sReportSpeakerData, data, 21);
 #endif
+}
+
+void WiimoteSpeaker::skip(int count)
+{
+    float samples[40];
+    while (count > 0) {
+        const int chunk = std::min(count, 40);
+        if (mSource->read(samples, chunk) < chunk)
+            return;
+        count -= chunk;
+    }
 }
 
 void WiimoteSpeaker::writeRegister(unsigned int address, const uint8_t *data, int length)

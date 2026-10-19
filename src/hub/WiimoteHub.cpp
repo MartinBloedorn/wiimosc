@@ -299,8 +299,12 @@ bool WiimoteHub::start(WiimotePairer::Method method)
     // Detached rather than joined, so shutting down doesn't wait for a running inquiry. The thread only touches
     // its own pairer and the shared flag.
     *mIsPairing = true;
-    std::thread([pairer = std::move(pairer), method, isPairing = mIsPairing]() {
+    std::thread([pairer = std::move(pairer), method, isPairing = mIsPairing, isPaused = mIsPairingPaused]() {
         while (*isPairing) {
+            if (*isPaused) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                continue;
+            }
             for (const auto &device : pairer->scanAndPair(method))
                 std::printf("paired %s [%s]\n", device.name.c_str(), device.address.c_str());
         }
