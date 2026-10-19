@@ -27,6 +27,7 @@ const uint8_t sReportSpeakerEnable = 0x14;
 const uint8_t sReportSpeakerData = 0x18;
 const uint8_t sReportSpeakerMute = 0x19;
 const unsigned int sRegisterSpeaker = 0x04a20000; //!< 0x04: register space (rather than EEPROM)
+const uint8_t sAckRequest = 0x02; //!< in an output report's first byte: the remote answers with 0x22 (report, error)
 
 // Register writes aren't acknowledged before wiiuse_write_data() returns; Settings::setupDelayMs paces them.
 const auto sSpeakerPowerDelay = std::chrono::milliseconds(150); //!< the remote acks 0x14 only after ~110 ms
@@ -122,6 +123,8 @@ const char *WiimoteSpeaker::writerName(Writer writer)
         return "wiiuse";
     case Writer::SetOutputReport:
         return "setreport";
+    case Writer::Register:
+        return "register";
     }
     return "?";
 }
@@ -159,6 +162,7 @@ void WiimoteSpeaker::run()
 #ifdef _WIN32
     timeBeginPeriod(1); // default sleep granularity is ~15 ms, more than a report period
 #endif
+    std::this_thread::sleep_for(std::chrono::milliseconds(mSettings.startDelayMs));
     setUp();
 
     const int count = samplesPerReport(mSettings.format);
@@ -197,7 +201,15 @@ void WiimoteSpeaker::run()
 
         uint8_t data[21] = {};
         data[0] = static_cast<uint8_t>(20 << 3); // payload length
+        if (mStatistics.reports < mSettings.ackReports)
+            data[0] |= sAckRequest;
         encode(samples, data + 1);
+        if (mStatistics.reports < std::min(mSettings.ackReports, 3)) {
+            std::printf("[%d] audio report:", mId);
+            for (uint8_t byte : data)
+                std::printf(" %02x", byte);
+            std::printf("\n");
+        }
         const Clock::time_point writeStart = Clock::now();
         if (!sendAudio(data))
             ++mStatistics.failedWrites;
@@ -235,8 +247,9 @@ void WiimoteSpeaker::setUp()
     const int maxVolume = 0x40; // more is no louder for PCM, and silent from 0x80 (measured; WiiBrew says 0xff)
     const int volume = std::clamp(static_cast<int>(std::lround(mSettings.volume * maxVolume)), 0, maxVolume);
 
-    const uint8_t on = 0x04;
-    const uint8_t off = 0x00;
+    const uint8_t ack = mSettings.ackReports > 0 ? sAckRequest : 0x00;
+    const uint8_t on = 0x04 | ack;
+    const uint8_t off = 0x00 | ack;
     sendReport(sReportSpeakerEnable, &on, 1);
     std::this_thread::sleep_for(std::max(sSpeakerPowerDelay, setupDelay()));
     sendReport(sReportSpeakerMute, &on, 1);
@@ -293,6 +306,11 @@ bool WiimoteSpeaker::sendReport(uint8_t reportType, const uint8_t *data, int len
 
 bool WiimoteSpeaker::sendAudio(const uint8_t *data)
 {
+    if (mSettings.writer == Writer::Register) {
+        // A write carries at most 16 bytes; the speaker data register works as a FIFO.
+        return wiiuse_write_data(mWiimote, sRegisterSpeaker, data + 1, 16) != 0
+            && wiiuse_write_data(mWiimote, sRegisterSpeaker, data + 17, 4) != 0;
+    }
 #ifdef _WIN32
     if (mSettings.writer == Writer::Wiiuse)
         return sendReport(sReportSpeakerData, data, 21);

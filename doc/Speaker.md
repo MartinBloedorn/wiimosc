@@ -17,9 +17,11 @@ wiimosc-speaker --target-id 1 --test-mode trigger --file click.wav
 | `--format adpcm\|pcm` | `adpcm` | 4-bit Yamaha ADPCM (40 samples per report) or 8-bit signed PCM (20 samples per report) |
 | `--rate <hz>` | `6000` (ADPCM), `3000` (PCM) | Sample rate. The defaults are what a Wiimote Plus actually plays, whatever is configured; see "Microphone measurements". |
 | `--volume <0-1>` | `1` | Speaker volume register, as a fraction of `0x40` (more is no louder; PCM is silent from `0x80`) |
-| `--writer async\|wiiuse\|setreport` | `async` | How audio reports are sent (experiment, see "Debugging") |
+| `--writer async\|wiiuse\|setreport\|register` | `async` | How audio reports are sent (experiment, see "Debugging"). `register` writes the audio to the speaker's data register (`0x16` reports) instead of sending `0x18`; `setreport` is rejected by the remote (error 2). |
 | `--queue <1-16>` | `3` | Audio reports in flight at once with `async`. `1` waits for each write to complete. |
 | `--setup-delay <ms>` | `30` | Pause after each speaker setup step |
+| `--start-delay <ms>` | `0` | Pause before the speaker setup (e.g. until the connection rumble has ended) |
+| `--ack <n>` | `0` | Diagnostics: requests acks (`0x22`) for the setup and the first `n` audio reports, and prints the first 3 audio reports. wiiuse prints the acks if the environment variable `WIIUSE_LOG_ACKS` is set. |
 | `--keep-scanning` | off | Keeps scanning for remotes to pair while the target is connected. By default, scanning pauses then, because an inquiry costs the connected remotes airtime (`WiimoteHub::setPairingPaused`). |
 | `--one-two`, `--no-auth`, `--id`, `--shutdown-on-exit`, `--idle-timeout` | | As for `wiimosc-pair` |
 
@@ -121,6 +123,23 @@ Still open: the audio reports themselves can't be seen in the log, since they by
 - **Falling behind:** when the sender falls behind, it skips the missed samples in the source. Each report therefore plays at the right pitch, and a sound keeps its duration.
 - **Measured result:** a 3 s file (800 Hz / silence / 1200 Hz) played back with the right pitches and timing, with ~50% of the energy in the tone and the rest in the gap buzz.
 - **Remaining limit:** the buzz is the link's limit. Removing it needs ~150 reports/s, possibly by getting the link out of sniff mode (not attempted).
+
+## Windows, after the macOS findings (2026-10-19)
+
+Same remote that plays on the Mac (`B8:AE:6E:56:1B:BD`, battery 0.47), measured with the laptop's microphone array through `tools/speakermic/run.sh`. On Windows it uses dshow, and plays a generated tone file in `--test-mode file`, since Git Bash can't send Ctrl+C. **Silent in every variant:** no tone in the recordings, and the user heard nothing, not even hiss.
+
+- **Link:** with only the target connected and scanning paused, the link carries **~115–130 reports/s** (async and wiiuse writers). The earlier ~61/s was measured with the Balance Board connected and scanning running.
+- **Acks** (`--ack <n>` requests them; wiiuse prints them when `WIIUSE_LOG_ACKS` is set, a wiimosc patch in `events.c`):
+  - Over the interrupt channel (`WriteFile`), the remote accepts speaker on (`0x14`), mute (`0x19`) and all register writes with error 0.
+  - Audio reports (`0x18`) aren't acked at all, which matches Dolphin's notes on real remotes.
+- **The audio data is valid:** the first reports of a 1 kHz tone are `a2 77 7d ff 46 …`, then a pattern repeating every 3 bytes (6 samples at 6000 Hz).
+- **Ruled out:**
+  - writer and rate: 10 reports/s bursts (as in the macOS rate test) are silent too;
+  - **register writes** to the speaker's data register `0xa20000` instead of `0x18` (`--writer register`): 805 writes acked with error 0, still silent. So the data reaches the remote;
+  - **zero-filled padding:** wiiuse pads short reports to 22 bytes, which was stack garbage before; it's now zeroed (patch in `os_win.c`);
+  - **control channel:** in a temporary experiment, the whole setup also went through `HidD_SetOutputReport`. The remote answered every report with **error 2**, setup and audio alike. So it only takes commands on the interrupt channel, and the audio of `--writer setreport` never reaches the speaker;
+  - **connection rumble:** starting the setup 1 s after connecting (`--start-delay 1000`), after the 300 ms rumble, is still silent.
+- **Conclusion so far:** on Windows the remote accepts the setup and the audio data, yet doesn't play. No difference from the macOS path has been found at the level of the bytes sent.
 
 ## Implementation
 

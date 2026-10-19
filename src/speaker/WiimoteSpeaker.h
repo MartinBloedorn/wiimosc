@@ -46,9 +46,10 @@ public:
 
     /*! \brief How audio reports are sent (an experiment: the speaker hisses, but stays silent). */
     enum class Writer {
-        Async,          //!< own overlapped WriteFile, up to queueDepth in flight (Windows)
-        Wiiuse,         //!< wiiuse_send(), the path LEDs and rumble take: WriteFile, waiting for each
-        SetOutputReport //!< HidD_SetOutputReport(): the HID control channel instead of the interrupt channel (Windows)
+        Async,           //!< own overlapped WriteFile, up to queueDepth in flight (Windows)
+        Wiiuse,          //!< wiiuse_send(), the path LEDs and rumble take: WriteFile, waiting for each
+        SetOutputReport, //!< HidD_SetOutputReport(): the control channel (Windows); the remote rejects it (error 2)
+        Register         //!< register writes (0x16) to the speaker's data register 0xa20000, instead of report 0x18
     };
 
     struct Settings {
@@ -58,6 +59,8 @@ public:
         int queueDepth = 3;  //!< audio reports in flight at once (Writer::Async); 1 waits for each write
         Writer writer = Writer::Async;
         int setupDelayMs = 30; //!< pause after each setup step (register writes aren't acknowledged synchronously)
+        int ackReports = 0;    //!< diagnostics: request an ack (0x22) for the setup and this many audio reports
+        int startDelayMs = 0;  //!< pause before the setup (experiment: after the connection rumble)
     };
 
     static const char *writerName(Writer writer);

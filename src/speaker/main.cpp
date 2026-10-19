@@ -245,9 +245,12 @@ void printUsage()
         "  --format adpcm|pcm     4-bit Yamaha ADPCM (default) or 8-bit PCM\n"
         "  --rate <hz>            sample rate (default 6000 for ADPCM, 3000 for PCM: the speaker's own rates)\n"
         "  --volume <0-1>         speaker volume (default 1: 0x40)\n"
-        "  --writer <writer>      how audio reports are sent: async (default), wiiuse, setreport\n"
+        "  --writer <writer>      how audio reports are sent: async (default), wiiuse, setreport, register\n"
         "  --queue <1-16>         audio reports in flight at once for async (default 3)\n"
         "  --setup-delay <ms>     pause after each speaker setup step (default 30)\n"
+        "  --start-delay <ms>     pause before the speaker setup (default 0)\n"
+        "  --ack <n>              diagnostics: requests acks for the speaker setup and the first n audio reports\n"
+        "                         (printed if the environment variable WIIUSE_LOG_ACKS is set)\n"
         "  --keep-scanning        keeps scanning for remotes to pair while the target is connected (by default,\n"
         "                         scanning pauses then: an inquiry costs the link throughput)\n"
         "  --one-two, --no-auth   pairing method, as for wiimosc-pair\n"
@@ -345,6 +348,8 @@ int main(int argc, char **argv)
                 settings.writer = WiimoteSpeaker::Writer::Wiiuse;
             else if (value == "setreport")
                 settings.writer = WiimoteSpeaker::Writer::SetOutputReport;
+            else if (value == "register")
+                settings.writer = WiimoteSpeaker::Writer::Register;
             else
                 isValid = false;
         } else if (name == "--setup-delay" && takeValue()) {
@@ -353,6 +358,12 @@ int main(int argc, char **argv)
         } else if (name == "--queue" && takeValue()) {
             settings.queueDepth = std::atoi(value.c_str());
             isValid = settings.queueDepth >= 1 && settings.queueDepth <= 16;
+        } else if (name == "--start-delay" && takeValue()) {
+            settings.startDelayMs = std::atoi(value.c_str());
+            isValid = settings.startDelayMs >= 0 && settings.startDelayMs <= 10000;
+        } else if (name == "--ack" && takeValue()) {
+            settings.ackReports = std::atoi(value.c_str());
+            isValid = settings.ackReports >= 0;
         } else if (name == "--id" && takeValue()) {
             fixedIds.push_back(value);
         } else {
