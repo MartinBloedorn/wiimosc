@@ -1,10 +1,12 @@
 #include "WiimoteStreamer.h"
 
+#include "osc/OscReceiver.h"
 #include "osc/OscSender.h"
 
 #include <wiiuse.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <string>
 
@@ -41,6 +43,10 @@ const auto sBatteryInterval = std::chrono::seconds(10);
 const auto sTareDuration = std::chrono::seconds(1);
 /*! \brief Below this total weight (kg), the board's center of mass is reported as 0,0 instead of noise. */
 const float sMinBoardWeight = 2.0f;
+/*! \brief Above this value, mote/rumble switches the motor on. */
+const float sRumbleThreshold = 0.5f;
+/*! \brief Ignored addresses are printed once each, up to this many. */
+const size_t sMaxIgnoredAddresses = 64;
 
 } // namespace
 
@@ -50,10 +56,13 @@ WiimoteStreamer::WiimoteStreamer(OscSender &sender, const Options &options)
 {
     if (mOptions.isIrEnabled && mOptions.fusion != FilterType::None && mOptions.irAnchors.empty())
         mOptions.irAnchors.push_back(IrAnchor{});
+    for (std::atomic<int> &request : mRumbleRequests)
+        request = -1;
 }
 
 void WiimoteStreamer::connected(int id, wiimote_t *wm, DeviceType type)
 {
+    mRumbleRequests[id] = -1;
     Device &device = mDevices[id];
     device = Device{};
     device.type = type;
@@ -99,6 +108,7 @@ void WiimoteStreamer::disconnected(int id, DeviceType)
 {
     send(OscMessage(address(id, "status")).add(std::string("none")));
     mDevices[id] = Device{};
+    mRumbleRequests[id] = -1;
 }
 
 void WiimoteStreamer::event(int id, wiimote_t *wm)
@@ -179,10 +189,54 @@ void WiimoteStreamer::update(int id, wiimote_t *wm)
     if (isSendingContinuous && mOptions.maxRate > 0)
         device.nextContinuous = now + std::chrono::microseconds(1000000 / mOptions.maxRate);
 
-    if (device.type == DeviceType::BalanceBoard)
+    if (device.type == DeviceType::BalanceBoard) {
         updateBoard(id, wm, isSendingContinuous);
-    else
+    } else {
+        applyRumble(id, wm);
         updateWiimote(id, wm, isSendingContinuous);
+    }
+}
+
+void WiimoteStreamer::applyRumble(int id, wiimote_t *wm)
+{
+    // Nothing until requested, so the hub's connection rumble runs undisturbed. Compared with the motor's actual
+    // state rather than the last request, so a request made during that rumble outlasts its end.
+    const int request = mRumbleRequests[id];
+    const bool isRumbling = WIIMOTE_IS_SET(wm, WIIMOTE_STATE_RUMBLE);
+    if (request >= 0 && (request == 1) != isRumbling)
+        wiiuse_rumble(wm, request);
+}
+
+void WiimoteStreamer::received(const OscReceivedMessage &message)
+{
+    // <prefix>/<id>/<path>
+    const std::string &prefix = mOptions.prefix;
+    const std::string &addr = message.address;
+    size_t position = prefix.size();
+    if (addr.compare(0, position, prefix) != 0 || position >= addr.size() || addr[position] != '/')
+        return ignore(message, "unknown address");
+    int id = 0;
+    const size_t idStart = ++position;
+    while (position < addr.size() && position - idStart < 3 && std::isdigit(static_cast<unsigned char>(addr[position])))
+        id = id * 10 + (addr[position++] - '0');
+    if (position == idStart || position >= addr.size() || addr[position] != '/')
+        return ignore(message, "unknown address");
+    const std::string path = addr.substr(position + 1);
+
+    if (path != "mote/rumble")
+        return ignore(message, "unknown address");
+    if (id >= WiimoteHub::sMaxDevices)
+        return ignore(message, "id out of range");
+    float value;
+    if (!message.toFloat(0, &value))
+        return ignore(message, "expects a number");
+    mRumbleRequests[id] = value > sRumbleThreshold ? 1 : 0;
+}
+
+void WiimoteStreamer::ignore(const OscReceivedMessage &message, const char *reason)
+{
+    if (mIgnoredAddresses.size() < sMaxIgnoredAddresses && mIgnoredAddresses.insert(message.address).second)
+        std::printf("[osc] ignoring %s: %s (printed once per address)\n", message.address.c_str(), reason);
 }
 
 void WiimoteStreamer::updateWiimote(int id, wiimote_t *wm, bool isSendingContinuous)

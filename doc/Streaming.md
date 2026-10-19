@@ -3,8 +3,8 @@
 `wiimosc-stream` pairs and connects devices the same way `wiimosc-pair` does (see [Pairing](Pairing.md)), and streams their input as OSC over UDP.
 
 ```
-wiimosc-stream --host 127.0.0.1 --port 4321 --prefix wiimosc [--max-rate 60] [--gyro] [--fusion madg] [--tare]
-               [--ir [anchor=0,-60,60]]
+wiimosc-stream --host 127.0.0.1 --port 4321 --prefix wiimosc [--in-port 4322] [--max-rate 60] [--gyro]
+               [--fusion madg] [--tare] [--ir [anchor=0,-60,60]]
 ```
 
 | Option | Default | Meaning |
@@ -12,6 +12,7 @@ wiimosc-stream --host 127.0.0.1 --port 4321 --prefix wiimosc [--max-rate 60] [--
 | `--host` | `127.0.0.1` | Target: host name, IPv4 address, or broadcast address (`255.255.255.255`, `192.168.1.255`). `0.0.0.0` is rejected, since it's a listening address. |
 | `--port` | `4321` | Target UDP port |
 | `--prefix` | `wiimosc` | Address prefix. Normalized: `wiimosc`, `/wiimosc/` → `/wiimosc`; may be empty. |
+| `--in-port <port>` | off | Receives OSC on this UDP port, on all interfaces, to control the devices. See [Input](#input---in-port). |
 | `--max-rate` | `0` | Max. rate (Hz) of continuous values per device; `0` = unlimited. Buttons and status messages are never limited. |
 | `--gyro` | off | Activates the MotionPlus on Wiimote Plus remotes and streams `mote/gyro`. A Nunchuk on such a remote is then not read. |
 | `--fusion <madg\|off>` | `off` | Sensor fusion on Wiimote Plus remotes: activates the MotionPlus (a Nunchuk is then not read), replaces `mote/rpy` with fused angles including yaw, and adds `mote/quat`. `madg` = Madgwick's AHRS ([xioTechnologies Fusion](https://github.com/xioTechnologies/Fusion)). `off` keeps wiiuse's own `mote/rpy`. See [Sensor fusion](#sensor-fusion---fusion). |
@@ -65,6 +66,22 @@ wiimosc-stream --id 0=B8:AE:6E:56:1B:BD --id 1=8C:CD:E8:C4:D5:0F --id 2=00:1F:C5
 
 "Continuous" values are sent whenever they change, at most `--max-rate` times per second. After connecting, every value is sent once, so receivers start with a complete state.
 
+## Input (`--in-port`)
+
+With `--in-port <port>`, the streamer also receives OSC on that UDP port, and takes these addresses (same `<p>` as above):
+
+| Address | Arguments | Effect |
+|---|---|---|
+| `<p>/mote/rumble` | number, 0–1 | Rumble motor: on above 0.5, off otherwise. Any numeric type works (float, int, double, `T`/`F`). |
+
+- **Rumble is on/off only**: wiiuse switches the motor, which has no intensity levels; the float argument is thresholded.
+- **Timing**: a request takes effect on the device's next poll (~10 ms), plus the write to the remote (~15 ms on Windows).
+- **Connection rumble**: the hub's short rumble on connect runs as usual until the first request for that remote. Requests for ids that aren't connected are dropped, and a remote that reconnects starts with the motor off.
+- **Quitting** (Ctrl+C) switches off the motor of any remote still rumbling.
+- **Ignored input** is reported once per address in the terminal (`[osc] ignoring /wiimosc/0/mote/led: unknown address`): unknown addresses (including another prefix), ids above 7, and a missing or non-numeric argument. Malformed packets are reported as such. Bundles are unpacked, and their time tags ignored.
+- The port is bound on all interfaces, so any machine on the network can send to it. It must differ from the target port if the target is on the same machine.
+- Testing: `python tools/oscsend.py 4322 /wiimosc/0/mote/rumble 1` (in Git Bash, prefix it with `MSYS_NO_PATHCONV=1`, otherwise the address is turned into a Windows path).
+
 ## Notes & caveats
 
 - **IR** (`--ir`): the camera tracks up to 4 IR sources (a sensor bar has two, at each end).
@@ -115,9 +132,10 @@ wiimosc-stream --fusion madg --ir anchor=0,-60,60:20
 
 - `src/hub/WiimoteHub`: shared by both tools. It runs pairing, device pickup and each device on separate threads, and handles connection output and rumble/blink feedback. It reports to an `AbstractHubListener` (`connected`, `disconnected`, `event`, `update`), called from each device's own thread.
 - `src/osc/OscSender`: a minimal OSC 1.0 encoder (int32, float32, string) plus a UDP socket (Winsock / BSD sockets, `SO_BROADCAST` set). No external dependency; OSC messages are simple enough.
+- `src/osc/OscReceiver`: the counterpart for `--in-port`. A parser for OSC 1.0 messages and bundles (all standard argument types, numbers read as such), and a UDP socket read on its own thread, which passes each message to a handler. The streamer's `received()` runs there: it only stores the request in an atomic per id, and the device's own thread applies it in `update()`, since only that thread may touch its `wiimote_t`.
 - `src/stream/WiimoteStreamer`: the listener that maps device state to OSC. It reads wiiuse's state on every `update()` rather than reacting to events, and sends a value only if it differs from the last one sent on that address (cached per device). Buttons are checked on every update; continuous values are subject to the rate limit.
 - `src/fusion`: sensor fusion, independent of wiiuse. `MotionFusion` (per remote) converts the raw gyro values with `MotionPlusCalibration`, handles the startup at rest, and drives an `AbstractOrientationFilter`: `MadgwickFilter` for now. `IrAnchorCorrection` corrects its yaw with the IR anchors. Details in [Fusion.md](Fusion.md).
-- `tools/oscdump.py`: a minimal receiver for testing, `python tools/oscdump.py 4321 20`.
+- `tools/oscdump.py`: a minimal receiver for testing, `python tools/oscdump.py 4321 20`. `tools/oscsend.py` sends single messages (`--int`, `--bundle`, `--host`).
 
 ## Status
 
@@ -136,4 +154,6 @@ wiimosc-stream --fusion madg --ir anchor=0,-60,60:20
 | `--ir anchor=...` with `--fusion madg`: sync, correction, `mote/ir/anchor` | ⏳ the first live test with a sensor bar showed yaw jumps (wrong camera x sign); fixed, and verified on a recording of that bar (Fusion.md §10); not yet re-tested live; single sources untested |
 | `--fusion madg`: calibration read, startup, `rpy`, `quat`, axis signs | ✅ user-confirmed on a Wiimote Plus; signs and gyro scale verified with recordings |
 | `--fusion madg`: tuned scale and accelerometer handling (settling ~1 s after motion) | ⏳ verified offline on recordings from one remote; not yet tried live; second remote's scale unchecked |
+| `--in-port`: receiving, parsing (floats, ints, bundles), ignored-input messages, port in use | ✅ tested without a remote, with `oscsend.py` |
+| `--in-port`: `mote/rumble` on a remote | ✅ user-confirmed on a remote (2026-10-19) |
 | Button changes, board under load, `--max-rate`, broadcast, reconnect while streaming, Nunchuk plug/unplug | ⏳ not yet confirmed |

@@ -3,20 +3,25 @@
 #include "fusion/MotionFusion.h"
 #include "hub/WiimoteHub.h"
 
+#include <atomic>
 #include <chrono>
 #include <initializer_list>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
 class OscMessage;
 class OscSender;
+struct OscReceivedMessage;
 
 /*! \brief Streams the input of all connected devices as OSC messages.
 
     Addresses have the form <prefix>/<id>/<path>, see doc/Streaming.md. Values are only sent when they change. Buttons
     are sent immediately, continuous values (orientation, acceleration, ...) at most \c maxRate times per second.
+
+    It also takes OSC input (received()): <prefix>/<id>/mote/rumble switches a remote's rumble motor.
  */
 class WiimoteStreamer : public AbstractHubListener
 {
@@ -43,6 +48,13 @@ public:
     void disconnected(int id, DeviceType type) override;
     void event(int id, wiimote_t *wm) override;
     void update(int id, wiimote_t *wm) override;
+
+    /*! \brief Handles an OSC message received on the input port. Called from the receiver's thread.
+
+        Requests are stored, and applied by the device's own thread on its next update(); requests for ids that
+        aren't connected are dropped.
+     */
+    void received(const OscReceivedMessage &message);
 
 private:
     using Clock = std::chrono::steady_clock;
@@ -77,8 +89,19 @@ private:
     void updateFusion(int id, wiimote_t *wm);
     void updateWiimote(int id, wiimote_t *wm, bool isSendingContinuous);
     void updateBoard(int id, wiimote_t *wm, bool isSendingContinuous);
+    void applyRumble(int id, wiimote_t *wm);
+    /*! \brief Prints why \a message is ignored, once per address. Called from the receiver's thread. */
+    void ignore(const OscReceivedMessage &message, const char *reason);
 
     OscSender &mSender;
     Options mOptions;
     Device mDevices[WiimoteHub::sMaxDevices];
+
+    /*! \brief Rumble per id, as last requested over OSC: 1 on, 0 off, -1 not requested since connecting.
+
+        Written by the receiver's thread, applied by the device's thread. Kept apart from Device, which is reset by
+        assignment.
+     */
+    std::atomic<int> mRumbleRequests[WiimoteHub::sMaxDevices];
+    std::set<std::string> mIgnoredAddresses; //!< receiver's thread only
 };

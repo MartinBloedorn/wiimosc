@@ -32,7 +32,8 @@ Last updated: 2026-10-19.
 src/pairing/   WiimotePairer: Bluetooth inquiry + OS-level pairing (WiimotePairer_win.cpp / WiimotePairer_mac.mm),
                Info.plist (Bluetooth usage description, embedded into the macOS executables)
 src/hub/       WiimoteHub + AbstractHubListener: threads, device pickup, feedback (shared by both tools)
-src/osc/       OscMessage / OscSender: minimal OSC 1.0 encoder + UDP sender (portable)
+src/osc/       OscMessage / OscSender: minimal OSC 1.0 encoder + UDP sender; OscReceiver: parser + UDP receiver
+               thread (wiimosc-stream --in-port); portable
 src/stream/    wiimosc-stream: WiimoteStreamer (listener → OSC) + CLI
 src/fusion/    MotionFusion (rest calibration → AbstractOrientationFilter), MadgwickFilter, MotionPlusCalibration,
                IrAnchors (IR anchor yaw correction)
@@ -43,7 +44,7 @@ src/pairtool/  wiimosc-pair: listener that prints A presses + CLI
 src/speaker/   wiimosc-speaker: WiimoteSpeaker (speaker protocol, paced sender), Audio (decoding, resampling) + CLI
 external/wiiuse/  vendored wiiuse 0.16.0, PATCHED (see §5)
 external/Fusion/  xioTechnologies Fusion v1.3.3 (MIT, submodule, unmodified): Madgwick's AHRS in C
-tools/         oscdump.py, oscrate.py, timestamp.py (testing helpers, see §8)
+tools/         oscdump.py, oscrate.py, oscsend.py, timestamp.py (testing helpers, see §8)
 doc/           Pairing.md, Streaming.md, Fusion.md, Speaker.md, this file, user's background notes
 ```
 
@@ -186,6 +187,7 @@ The full reference (design, conventions, measurements, tuning method, open work)
 - Tools:
   - `python tools/oscdump.py <port> <seconds>`: per-address counts and first/last decoded values.
   - `python tools/oscrate.py <port> <seconds>`: messages per second per device id, to spot stalls.
+  - `python tools/oscsend.py <port> <address> [values] [--int] [--bundle]`: sends one message, e.g. to `--in-port`. In Git Bash, set `MSYS_NO_PATHCONV=1`: otherwise MSYS turns `/wiimosc/...` into `C:/Program Files/Git/wiimosc/...`.
   - `python tools/timestamp.py [--interrupt] <seconds> <cmd...>`: timestamps every output line. Combined with the **Debug** build (which enables wiiuse's `WIIUSE_DEBUG` log), this shows where time goes; that's how the 5 s read timeouts and `0xcc` buffers were found. `--interrupt` ends the run with Ctrl+Break (a clean shutdown, so the shutdown summary prints) instead of a kill.
 - On macOS, `timestamp.py --interrupt` sends SIGINT. IOBluetooth logs lines like `-[IOBluetoothDeviceInquiry initWithDelegate:]` to stderr on every inquiry; filter them out with `grep -v`.
 - Pattern for timed runs from PowerShell: `Start-Process ... -RedirectStandardOutput ... -PassThru`, sleep, then `Stop-Process` (a hard kill: no shutdown output). On Windows, a script can't send Ctrl+C to a single process, only Ctrl+Break, which the tools handle like Ctrl+C.

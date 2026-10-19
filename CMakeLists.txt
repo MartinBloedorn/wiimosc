@@ -62,7 +62,7 @@ if(WIN32)
     target_link_libraries(hub PRIVATE hid) # HidD_GetSerialNumberString, for Bluetooth addresses
 endif()
 
-add_library(osc STATIC src/osc/OscSender.h src/osc/OscSender.cpp)
+add_library(osc STATIC src/osc/OscSender.h src/osc/OscSender.cpp src/osc/OscReceiver.h src/osc/OscReceiver.cpp)
 target_include_directories(osc PUBLIC src)
 if(WIN32)
     target_link_libraries(osc PRIVATE ws2_32)

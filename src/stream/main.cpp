@@ -1,6 +1,7 @@
 /*! \brief Streaming tool: pairs devices like wiimosc-pair, and streams their input as OSC. */
 
 #include "WiimoteStreamer.h"
+#include "osc/OscReceiver.h"
 #include "osc/OscSender.h"
 
 #include <atomic>
@@ -33,6 +34,8 @@ void printUsage()
                 "  --host <host>      OSC target, name, IPv4 or broadcast address (default 127.0.0.1)\n"
                 "  --port <port>      OSC target port (default 4321)\n"
                 "  --prefix <prefix>  address prefix (default \"wiimosc\")\n"
+                "  --in-port <port>   receive OSC on this UDP port, on all interfaces: <prefix>/<id>/mote/rumble\n"
+                "                     (number, > 0.5 = on) (default: off)\n"
                 "  --max-rate <hz>    max. rate of continuous values per device, 0 = unlimited (default 0)\n"
                 "  --gyro             enable the MotionPlus gyro on supporting remotes (hides a Nunchuk)\n"
                 "  --fusion <madg|off>\n"
@@ -61,6 +64,7 @@ int main(int argc, char **argv)
 {
     std::string host = "127.0.0.1";
     int port = 4321;
+    int inPort = 0; // 0: no input
     WiimoteStreamer::Options options;
     options.prefix = "wiimosc";
     WiimotePairer::Method method = WiimotePairer::Method::SyncButton;
@@ -74,6 +78,12 @@ int main(int argc, char **argv)
             host = argv[++i];
         } else if (std::strcmp(argv[i], "--port") == 0 && hasValue) {
             port = std::atoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--in-port") == 0 && hasValue) {
+            inPort = std::atoi(argv[++i]);
+            if (inPort <= 0 || inPort > 65535) {
+                printUsage();
+                return 1;
+            }
         } else if (std::strcmp(argv[i], "--prefix") == 0 && hasValue) {
             options.prefix = argv[++i];
         } else if (std::strcmp(argv[i], "--max-rate") == 0 && hasValue) {
@@ -141,6 +151,12 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    OscReceiver receiver;
+    if (inPort != 0 && !receiver.open(static_cast<uint16_t>(inPort))) {
+        std::fprintf(stderr, "can't listen on UDP port %d (in use?)\n", inPort);
+        return 1;
+    }
+
     WiimoteStreamer streamer(sender, options);
     WiimoteHub hub(&streamer);
     for (const std::string &fixedId : fixedIds) {
@@ -157,9 +173,14 @@ int main(int argc, char **argv)
     std::printf("streaming to %s:%d as %s/<id>/..., press %s on a remote to pair it (Ctrl+C to quit)\n",
                 host.c_str(), port, options.prefix.c_str(),
                 method == WiimotePairer::Method::SyncButton ? "SYNC" : "1+2");
+    if (inPort != 0) {
+        receiver.start([&streamer](const OscReceivedMessage &message) { streamer.received(message); });
+        std::printf("receiving OSC on port %d\n", inPort);
+    }
 
     while (sIsRunning)
         WiimotePairer::processEvents(100);
+    receiver.stop();
     hub.stop();
     return 0;
 }
