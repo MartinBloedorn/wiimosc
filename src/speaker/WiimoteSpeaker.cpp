@@ -106,6 +106,11 @@ private:
     std::vector<Entry> mEntries;
     size_t mNext = 0;
 };
+#else
+/*! \brief Unused: elsewhere, every writer sends through wiiuse (synchronous IOHIDDeviceSetReport on macOS). */
+class WiimoteSpeaker::AsyncWriter
+{
+};
 #endif
 
 const char *WiimoteSpeaker::writerName(Writer writer)

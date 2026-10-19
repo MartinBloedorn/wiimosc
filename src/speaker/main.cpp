@@ -400,7 +400,7 @@ int main(int argc, char **argv)
                 mode == TestMode::Trigger ? ", on every press of A" : "");
 
     while (sIsRunning && !(mode == TestMode::File && clip.hasFinished()) && !tester.hasSweepFinished())
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        WiimotePairer::processEvents(100);
     if (mode == TestMode::File && clip.hasFinished())
         std::printf("[%d] file finished\n", targetId);
     tester.stop();

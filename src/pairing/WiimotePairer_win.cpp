@@ -206,6 +206,11 @@ bool WiimotePairer::disconnect(const std::string &address)
                            &bytesReturned, nullptr) != 0;
 }
 
+void WiimotePairer::processEvents(int milliseconds)
+{
+    Sleep(static_cast<DWORD>(milliseconds));
+}
+
 std::string WiimotePairer::hostAddress() const
 {
     return formatAddress(mHostAddress);

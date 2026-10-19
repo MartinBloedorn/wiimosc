@@ -12,7 +12,7 @@ wiimosc-speaker --target-id 1 --test-mode trigger --file click.wav
 |---|---|---|
 | `--target-id <id>` | `0` | Remote to play on. Other devices connect as usual, and are ignored. Combine with `--id` to make the target a specific remote. |
 | `--test-mode` | `sine` | `sine`: a sine wave until Ctrl+C. `file`: plays `--file` once, then quits. `trigger`: plays `--file` from the start on every press of A (restarting it if it's still playing). `sweep`: the sine with each `--writer`, with 30 and 200 ms `--setup-delay` (6 variants of 6 s, announced), then quits. |
-| `--file <path>` | | Audio file, anything Windows can decode (wav, mp3, m4a/AAC, wma, ...). Decoded and resampled up front, mixed down to mono, and normalized. |
+| `--file <path>` | | Audio file, anything the OS can decode (wav, mp3, m4a/AAC, aiff; wma on Windows). Decoded and resampled up front, mixed down to mono, and normalized. |
 | `--frequency <hz>` | `440` | Sine frequency |
 | `--format adpcm\|pcm` | `adpcm` | 4-bit Yamaha ADPCM (40 samples per report) or 8-bit signed PCM (20 samples per report) |
 | `--rate <hz>` | `2000` (ADPCM), `1000` (PCM) | Sample rate. Both defaults need 50 reports/s, see below. |

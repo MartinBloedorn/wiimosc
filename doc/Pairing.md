@@ -8,7 +8,7 @@ wiiuse does not pair devices on any platform:
 
 - **Windows** (`os_win.c`): only lists HID devices that are already present, i.e. already paired through the OS.
 - **Linux** (`os_nix.c`): runs its own scan (`hci_inquiry`) and connects directly over L2CAP, so it skips OS pairing. The connection lasts only until the remote powers off.
-- **macOS** (`os_mac/`): scans with IOBluetooth and opens L2CAP channels directly. This no longer works on recent macOS versions (see [Wiimotes for AV-interactions](Wiimotes%20for%20AV-interactions.md)).
+- **macOS** (`os_mac/`): scans with IOBluetooth and opens L2CAP channels directly. This no longer works on recent macOS versions (see [Wiimotes for AV-interactions](Wiimotes%20for%20AV-interactions.md)). wiimosc replaces it with an IOKit HID backend (`os_mac_hid.c`) that works like the Windows one (see [macOS implementation](#macos-implementation)).
 
 Pairing through the OS by hand means converting MAC addresses into binary PINs. On Windows it fails whenever the address contains a `0x00` byte.
 
@@ -44,6 +44,21 @@ Found in `src/pairing/WiimotePairer_win.cpp`. It follows the flow Dolphin ships 
 7. **Enable HID**: `BluetoothSetServiceState(..., HumanInterfaceDeviceServiceClass_UUID, BLUETOOTH_SERVICE_ENABLE)`. The device then shows up as a HID device, and wiiuse's `wiiuse_find` can open it. That HID device appears with a delay, since Windows installs a driver on the first pairing. The tester picks it up whenever it appears (see below).
 
 `Method::None` skips steps 5–6 and only enables the HID service. Dolphin's continuous scanning works this way for remotes connected with 1+2.
+
+## macOS implementation
+
+`WiimotePairer_mac.mm` (Objective-C++, ARC). The model is the same as on Windows: the OS pairs the remote and connects it as a HID device, and wiiuse opens that HID device (`os_mac_hid.c`, see [wiiuse patches](#wiiuse-patches)). Found on macOS 14.8 (Sonoma) with a Wiimote Plus:
+
+1. **IOBluetooth delivers its callbacks on the main thread's run loop**, whatever thread started the inquiry or pairing. With the main thread asleep, an inquiry finds nothing. The tools' main threads therefore wait in `WiimotePairer::processEvents()` (which runs the main run loop on macOS, and sleeps on Windows), and the pairing thread polls flags set by the delegates.
+2. **Inquiry**: `IOBluetoothDeviceInquiry` (classic only) runs for its length and is then stopped; its completion callback came late or not at all. Only discoverable devices show up, i.e. remotes in SYNC or 1+2 mode.
+3. **Unknown names**: a device macOS doesn't know (e.g. right after its pairing was removed) is reported with its *address as the name*, and the inquiry's name update doesn't fix it. `remoteNameRequest:nil` returns success after ~10 ms without fetching a name; only the asynchronous `remoteNameRequest:<delegate>` does. If that fails too, a peripheral with minor class joystick (Wiimote, Balance Board) or gamepad (Wiimote Plus) and no real name counts as a Nintendo device (shown as "Nintendo device (name unknown)").
+4. **Re-pairing**: a paired remote found by the inquiry is in pairing mode again, so its pairing is removed first (private `-[IOBluetoothDevice remove]`, as used by the Bluetooth settings and blueutil). Pairing right after removal fails (error `0x2`), so it waits 1 s.
+5. **PIN**: `IOBluetoothDevicePair`, with the **private API that Dolphin's [WiimotePair](https://github.com/dolphin-emu/WiimotePair) uses**: `setUserDefinedPincode:YES` before `start` (otherwise the delegate isn't asked for a PIN), and the answer goes through `[[IOBluetoothCoreBluetoothCoordinator sharedInstance] pairPeer:[device classicPeer] forType:[pairing currentPairingType] withKey:@(pin as uint64)]`. The public `replyPINCode:PINCode:` passes the PIN through an `NSString`, which mangles bytes like `0x00` or `≥ 0x80` (the same problem as `BluetoothAuthenticateDevice` on Windows); with it, pairing failed with `kIOReturnError` (`0xe00002bc`). The private methods are looked up at runtime; without them, the tool warns and falls back to `replyPINCode:`.
+6. After pairing, macOS connects the HID service on its own (a fallback `openConnection` is in place).
+7. **Shutting down**: `-[IOBluetoothDevice closeConnection]` drops the link and powers the remote off.
+8. **Bluetooth permission (TCC)**: the executables embed an `Info.plist` with `NSBluetoothAlwaysUsageDescription` (`__TEXT,__info_plist`, see `CMakeLists.txt`); macOS may ask the terminal app for Bluetooth access on first use.
+
+`removeStaleDevices()` does nothing on macOS: there are no half-remembered devices that block an inquiry, as on Windows.
 
 ## Pair & test tool (`wiimosc-pair`)
 
@@ -102,21 +117,27 @@ Plugging in or unplugging an expansion also counts. After the timeout, the devic
 - `io.c`: `wiiuse_wait_report` returns once the device is disconnected, and `wiiuse_read_data_sync` gives up after 3 attempts (it used to retry forever, which hangs when a device stops answering). On failure, its output is zeroed.
 - `events.c` / `wiiuse.h`: the Motion+ probe runs only once per connection (`WIIMOTE_STATE_MPLUS_PROBED`), instead of on every status report for devices without a Motion+. It's a synchronous read, and the battery status requests every 10 s triggered it each time. Side effect: a Motion+ *accessory* plugged in after connecting isn't detected until the remote reconnects.
 
+**macOS backend (`os_mac_hid.c`, new).** wiiuse's own macOS backend (`os_mac/`, IOBluetooth inquiry + L2CAP) is left in the tree but no longer built.
+
+- `os_mac_hid.c`: finds remotes among the IOKit HID devices (vendor `0x057e`, product `0x0306`/`0x0330`) and opens them, with the same re-scan semantics as the patched `os_win.c` (skip open devices, fill the next unconnected slot, `reset_slot`). Input reports arrive via `IOHIDDeviceRegisterInputReportCallback` on a private dispatch queue per device and go into a queue, so reads (10 ms timeout, as on Windows) work from any thread without a run loop: the hub opens devices on the finder thread and polls them on the device threads. Removal is reported by a removal callback and turned into `wiiuse_disconnected` by the next read. Writes are synchronous `IOHIDDeviceSetReport` output reports. `wiiuse_os_disconnect` closes the device even while connected (unlike Windows).
+- `wiiuse.h`: macOS members `hid_device`, `hid_reports`, `dev_path[256]` (IORegistry entry id) and `dev_serial[64]` (HID serial number, which is the Bluetooth address, e.g. `8c-cd-e8-c4-d5-0f`; the hub reads the address from it). A remote is also considered open if a connected slot has the same serial.
+- `src/CMakeLists.txt`: builds `os_mac_hid.c` on Apple and links IOKit and CoreFoundation instead of IOBluetooth.
+
 Noticed but left alone: `wiiuse_os_disconnect` returns early when the remote *is* connected, which looks inverted. As a result, `wiiuse_cleanup` doesn't close the handles of connected remotes. This is harmless at process exit.
 
 ## Decisions
 
 - **C++17 + CMake, with wiiuse as a static subproject.** wiiuse already handles HID I/O, the input reports and the extensions (Nunchuk, Balance Board). wiimosc only adds the pairing step that wiiuse lacks.
 - **`WIIUSE_STATIC` is defined publicly on the `wiiuse` target.** Without it `wiiuse.h` declares `dllimport`, and static linking fails on MSVC. This was the real cause of the linking failure described in the AV notes, which was worked around there with `BUILD_SHARED_LIBS`.
-- **Pairing is a separate `pairing` library** (`WiimotePairer`) with one source file per platform. The header is platform-neutral, and only the Windows backend exists so far.
+- **Pairing is a separate `pairing` library** (`WiimotePairer`) with one source file per platform. The header is platform-neutral; Windows and macOS backends exist.
 - **SYNC is the default method**: permanent pairings mean less hassle in a live/AV setup, and the Balance Board needs it anyway.
 - **No Python**: pybluez is unmaintained, and the native APIs (bthprops, BlueZ, IOBluetooth) are C/Objective-C anyway.
 - **wiiuse is patched in place** rather than wrapped by a separate HID layer in wiimosc. Writing our own HID search would need wiiuse's internal handshake anyway, and closing/reopening all remotes on every new connection would interrupt the ones already connected.
 
-## Other platforms (planned)
+## Other platforms
 
 - **Linux**: wiiuse's direct L2CAP connection works without pairing. For permanent SYNC pairings, BlueZ's built-in `wiimote` plugin supplies the reversed-address PIN automatically, so pairing can be scripted over D-Bus (`org.bluez.Device1.Pair`, then `Trusted = true`) or `bluetoothctl`. The kernel's `hid-wiimote` driver may claim the device; this needs checking against wiiuse.
-- **macOS**: pair with `IOBluetoothDevicePair` and answer `devicePairingPINCodeRequest` with the reversed host address, as [WiimotePairer](https://github.com/dolphin-emu/WiimotePairer) does. It may need a `bluetoothd` restart and the Bluetooth permission prompt (TCC).
+- **macOS**: implemented, see [macOS implementation](#macos-implementation).
 
 ## Status
 
@@ -135,4 +156,11 @@ Noticed but left alone: `wiiuse_os_disconnect` returns early when the remote *is
 | `--shutdown-on-exit` with the Balance Board | ✅ disconnects; stayed off in a second run |
 | `--shutdown-on-exit` with Wiimotes | ✅ confirmed by the user |
 | `--idle-timeout` (Wiimote Plus + board, via `wiimosc-stream`) | ✅ both shut down after the timeout |
-| Linux / macOS backends | ❌ not implemented |
+| macOS build (Apple clang 15, CMake, Makefiles) | ✅ builds without warnings in wiimosc's code |
+| macOS 14.8: pairing a Wiimote Plus via SYNC (with its old pairing removed first) | ✅ works, HID connection and wiiuse handshake follow (~1.4 s) |
+| macOS: picking up a remote already connected at startup | ✅ works (0.6 s) |
+| macOS: reconnect of a SYNC-paired remote with a button press | ✅ works |
+| macOS: A presses, rumble + LED on connect | ✅ works |
+| macOS: `--shutdown-on-exit` (`closeConnection`) | ✅ link dropped, remote disconnected |
+| macOS: 1+2 pairing, Balance Board, two remotes at once, `--idle-timeout` | ⏳ untested |
+| Linux backend | ❌ not implemented |

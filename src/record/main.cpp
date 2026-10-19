@@ -144,7 +144,7 @@ void wait(double seconds)
 {
     const auto end = std::chrono::steady_clock::now() + std::chrono::duration<double>(seconds);
     while (sIsRunning && std::chrono::steady_clock::now() < end)
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        WiimotePairer::processEvents(20);
 }
 
 bool parseCues(const char *text, std::vector<double> *cues)
@@ -230,7 +230,7 @@ int main(int argc, char **argv)
         return 1;
     std::printf("waiting for a Wiimote Plus (Ctrl+C to quit)\n");
     while (sIsRunning && !recorder.remote())
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        WiimotePairer::processEvents(50);
 
     if (sIsRunning && !cues.empty()) {
         wiimote_t *wm = recorder.remote();

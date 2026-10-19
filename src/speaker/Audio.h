@@ -6,7 +6,7 @@
 /*! \brief Decodes an audio file (wav, mp3, m4a, ...) into mono float samples at \a sampleRate.
 
     Channels are averaged, and the result is resampled with a low-pass filter (no aliasing above the target's
-    Nyquist frequency). Decoding uses the platform's codecs (Media Foundation on Windows).
+    Nyquist frequency). Decoding uses the platform's codecs (Media Foundation on Windows, AudioToolbox on macOS).
  */
 bool loadAudioFile(const std::string &path, int sampleRate, std::vector<float> *samples, std::string *error);
 

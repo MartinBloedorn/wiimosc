@@ -38,7 +38,7 @@ wiimosc-stream --id 0=B8:AE:6E:56:1B:BD --id 1=8C:CD:E8:C4:D5:0F --id 2=00:1F:C5
 - On shutdown (Ctrl+C), both tools list the connected devices, and print a ready-to-paste line: `to keep these ids: --id 0=... --id 1=...`. Run once, arrange the ids as wanted, and paste.
 - Addresses are case-insensitive, and may use `:`, `-`, or no separators.
 - Ids given with `--id` stay reserved while their device is away: other devices take the lowest id that is neither in use nor reserved (and only fall back to reserved ids when everything else is taken).
-- The address comes from the HID serial number, which Windows sets to the Bluetooth address for Bluetooth HID devices. A device whose address can't be read is shown as `(unknown address)` and always gets a free id.
+- The address comes from the HID serial number, which Windows and macOS set to the Bluetooth address for Bluetooth HID devices. A device whose address can't be read is shown as `(unknown address)` and always gets a free id.
 
 | Address | Arguments | Sent |
 |---|---|---|

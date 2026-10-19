@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Embedded into the macOS executables (__TEXT,__info_plist): without a usage description, macOS terminates a
+     process that accesses Bluetooth. -->
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>org.synestechia.wiimosc</string>
+    <key>CFBundleName</key>
+    <string>wiimosc</string>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>wiimosc pairs Wiimotes and Balance Boards over Bluetooth.</string>
+</dict>
+</plist>

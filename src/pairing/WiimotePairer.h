@@ -56,6 +56,14 @@ public:
      */
     bool disconnect(const std::string &address);
 
+    /*! \brief Waits for \a milliseconds while delivering the OS's Bluetooth events.
+
+        On macOS, IOBluetooth delivers its callbacks (inquiry results, pairing requests) on the main thread's run
+        loop, whatever thread started the operation. The main thread must therefore wait with this function while
+        the pairing thread runs; elsewhere, it just sleeps.
+     */
+    static void processEvents(int milliseconds);
+
 private:
     void *mRadio = nullptr;
     unsigned char mHostAddress[6] = {};

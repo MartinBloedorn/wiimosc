@@ -47,7 +47,8 @@ DeviceType detectType(const wiimote *wm)
 
 /*! \brief Returns the device's Bluetooth address, or an empty string if it can't be determined.
 
-    On Windows, Bluetooth HID devices report their address as the HID serial number (e.g. "b8ae6e561bbd").
+    Bluetooth HID devices report their address as the HID serial number (e.g. "b8ae6e561bbd" on Windows,
+    "b8-ae-6e-56-1b-bd" on macOS).
  */
 std::string readAddress(const wiimote *wm)
 {
@@ -59,6 +60,9 @@ std::string readAddress(const wiimote *wm)
     for (const wchar_t *c = serial; *c; ++c)
         ascii += static_cast<char>(*c);
     return WiimoteHub::normalizeAddress(ascii);
+#elif defined(__APPLE__)
+    // Filled by wiiuse's HID backend (wiimosc patch) from the HID serial number, e.g. "8c-cd-e8-c4-d5-0f".
+    return WiimoteHub::normalizeAddress(wm->dev_serial);
 #else
     (void)wm;
     return {};
@@ -447,6 +451,9 @@ void WiimoteHub::runFinder()
                 wiimote *placeholder = mPlaceholders[i];
                 placeholder->state = WIIMOTE_STATE_CONNECTED;
                 std::memcpy(placeholder->dev_path, mWiimotes[i]->dev_path, sizeof(placeholder->dev_path));
+#ifdef __APPLE__
+                std::memcpy(placeholder->dev_serial, mWiimotes[i]->dev_serial, sizeof(placeholder->dev_serial));
+#endif
                 slots[count++] = placeholder;
             }
         }

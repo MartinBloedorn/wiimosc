@@ -95,7 +95,7 @@ int main(int argc, char **argv)
                 method == WiimotePairer::Method::SyncButton ? "SYNC" : "1+2");
 
     while (sIsRunning)
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        WiimotePairer::processEvents(100);
     hub.stop();
     return 0;
 }

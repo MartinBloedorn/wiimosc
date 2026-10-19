@@ -2,7 +2,7 @@
 
 Cross-platform utility that pairs Nintendo Wiimotes (with Nunchuk) and the Wii Fit Balance Board, and turns their input into OSC messages.
 
-> **Status:** early, Windows only so far. Automated pairing and OSC streaming work on Windows; the Linux/macOS backends aren't written yet. See [doc/Pairing.md](doc/Pairing.md) and [doc/Streaming.md](doc/Streaming.md).
+> **Status:** early. Automated pairing and OSC streaming work on Windows and macOS; the Linux backend isn't written yet. See [doc/Pairing.md](doc/Pairing.md) and [doc/Streaming.md](doc/Streaming.md).
 
 ## Why
 
@@ -10,12 +10,14 @@ Getting a Wiimote to talk to a computer normally means pairing it through the OS
 
 ## Building
 
-Requirements: CMake ≥ 3.16 and a C++17 compiler (Visual Studio 2022 on Windows). wiiuse is included under `external/wiiuse` and is built as a static library.
+Requirements: CMake ≥ 3.16 and a C++17 compiler (Visual Studio 2022 on Windows, Xcode's command-line tools on macOS). wiiuse is included under `external/wiiuse` and is built as a static library.
 
 ```
-cmake -S . -B build
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 ```
+
+On macOS, the first run may ask to allow Bluetooth access for your terminal app (System Settings → Privacy & Security → Bluetooth).
 
 ## Usage
 
@@ -71,7 +73,7 @@ wiimosc-speaker --target-id 1 --test-mode file --file song.m4a
 wiimosc-speaker --target-id 1 --test-mode trigger --file click.wav
 ```
 
-The speaker is lo-fi by nature, and on Windows the link carries only ~60 audio reports/s, which limits the sample rate to ~2000 Hz for ADPCM. See [doc/Speaker.md](doc/Speaker.md) for options, protocol and findings.
+The speaker is lo-fi by nature, and on Windows the link carries only ~60 audio reports/s (macOS: untested), which limits the sample rate to ~2000 Hz for ADPCM. See [doc/Speaker.md](doc/Speaker.md) for options, protocol and findings.
 
 ## Layout
 
@@ -97,4 +99,4 @@ The speaker is lo-fi by nature, and on Windows the link carries only ~60 audio r
 |---|---|---|---|
 | Windows | ✅ | ✅ | ✅ |
 | Linux | planned (BlueZ) | ⚠️ supported by wiiuse (direct L2CAP), not yet working in practice | ✅ (portable code, untested) |
-| macOS | planned (IOBluetooth) | ⚠️ unreliable on recent versions | ✅ (portable code, untested) |
+| macOS | ✅ (IOBluetooth) | ✅ (IOKit HID backend; ~67 reports/s) | ✅ |
