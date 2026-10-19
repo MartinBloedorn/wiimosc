@@ -534,7 +534,7 @@ void WiimoteHub::runDevice(int index, int id, DeviceType type, std::string addre
         }
     }
 
-    // Stopping while the remote rumbles (e.g. on request, wiimosc-stream's mote/rumble) would leave it rumbling.
+    // Stopping while the remote rumbles (e.g. on request, wiimosc-stream's mote/rumble/...) would leave it rumbling.
     if (WIIMOTE_IS_CONNECTED(wm) && WIIMOTE_IS_SET(wm, WIIMOTE_STATE_RUMBLE))
         wiiuse_rumble(wm, 0);
 

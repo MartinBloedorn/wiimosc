@@ -73,13 +73,15 @@ With `--in-port <port>`, the streamer also receives OSC on that UDP port, and ta
 
 | Address | Arguments | Effect |
 |---|---|---|
-| `<p>/mote/rumble` | number, 0–1 | Rumble motor: on above 0.5, off otherwise. Any numeric type works (float, int, double, `T`/`F`). |
+| `<p>/mote/rumble/trigger` | number, 0–1 | Rumble motor: on above 0.5, off otherwise, until the next rumble request. Any numeric type works (float, int, double, `T`/`F`). |
+| `<p>/mote/rumble/pulse` | 2 numbers: 0–1, ms | Rumble for the given duration (capped at 3000 ms), then off; the streamer switches it off. An intensity of 0.5 or less, or a duration of 0, switches the motor off right away. |
 | `<p>/mote/speaker/sine` | number, Hz (up to 3000) | Plays a sine on the remote's speaker until `stop` or the next sound. |
 | `<p>/mote/speaker/file` | string, path | Plays an audio file once, from the start (wav, mp3, m4a/AAC, aiff; wma on Windows). The path is on the machine running the streamer. |
 | `<p>/mote/speaker/stop` | none | Stops the current sound. |
 
-- **Rumble is on/off only**: wiiuse switches the motor, which has no intensity levels; the float argument is thresholded.
-- **Timing**: a request takes effect on the device's next poll (~10 ms), plus the write to the remote (~15 ms on Windows).
+- **Rumble is on/off only**: wiiuse switches the motor, which has no intensity levels; the intensity is thresholded.
+- **The last rumble request wins**: `trigger` and `pulse` replace whatever is ongoing. A trigger cuts a pulse short (`trigger 1` keeps the motor on, `trigger 0` stops it), and a pulse ends a trigger's rumble when it runs out, or restarts a running pulse's timer.
+- **Timing**: a request takes effect on the device's next poll (~10 ms), plus the write to the remote (~15 ms on Windows). The end of a pulse is checked on each poll as well, so pulses run up to ~10 ms longer than requested, and very short ones (below ~20 ms) may hardly be felt. (`mote/rumble` was renamed to `mote/rumble/trigger` on 2026-10-19.)
 - **Connection rumble**: the hub's short rumble on connect runs as usual until the first request for that remote. Requests for ids that aren't connected are dropped, and a remote that reconnects starts with the motor off.
 - **Quitting** (Ctrl+C) switches off the motor of any remote still rumbling, and its speaker.
 - **Speaker**: uses `wiimosc-speaker`'s defaults, which played best: ADPCM at the speaker's native 6000 Hz, full volume, asynchronous writes. See [Speaker](Speaker.md).
@@ -92,7 +94,7 @@ With `--in-port <port>`, the streamer also receives OSC on that UDP port, and ta
   - **Board:** the Balance Board has no speaker; requests for its id are ignored as "no Wiimote connected".
 - **Ignored input** is reported once per address in the terminal (`[osc] ignoring /wiimosc/0/mote/led: unknown address`): unknown addresses (including another prefix), ids above 7, ids without a connected Wiimote (speaker only), and a missing or wrong argument. Malformed packets are reported as such. Bundles are unpacked, and their time tags ignored.
 - The port is bound on all interfaces, so any machine on the network can send to it. It must differ from the target port if the target is on the same machine.
-- Testing: `python tools/oscsend.py 4322 /wiimosc/0/mote/rumble 1`, or `python tools/oscsend.py 4322 /wiimosc/0/mote/speaker/file C:/sounds/click.wav` (values that aren't numbers are sent as strings; in Git Bash, prefix it with `MSYS_NO_PATHCONV=1`, otherwise the address is turned into a Windows path).
+- Testing: `python tools/oscsend.py 4322 /wiimosc/0/mote/rumble/pulse 1 300`, or `python tools/oscsend.py 4322 /wiimosc/0/mote/speaker/file C:/sounds/click.wav` (values that aren't numbers are sent as strings; in Git Bash, prefix it with `MSYS_NO_PATHCONV=1`, otherwise the address is turned into a Windows path).
 
 ## Notes & caveats
 
@@ -169,7 +171,8 @@ wiimosc-stream --fusion madg --ir anchor=0,-60,60:20
 | `--fusion madg`: calibration read, startup, `rpy`, `quat`, axis signs | ✅ user-confirmed on a Wiimote Plus; signs and gyro scale verified with recordings |
 | `--fusion madg`: tuned scale and accelerometer handling (settling ~1 s after motion) | ⏳ verified offline on recordings from one remote; not yet tried live; second remote's scale unchecked |
 | `--in-port`: receiving, parsing (floats, ints, bundles), ignored-input messages, port in use | ✅ tested without a remote, with `oscsend.py` |
-| `--in-port`: `mote/rumble` on a remote | ✅ user-confirmed on a remote (2026-10-19) |
+| `--in-port`: `mote/rumble` (now `mote/rumble/trigger`) on a remote | ✅ user-confirmed on a remote (2026-10-19) |
+| `--in-port`: `mote/rumble/pulse`, overriding between trigger and pulse | ✅ user-confirmed on remotes (2026-10-19) |
 | `--in-port`: `mote/speaker/{sine,file,stop}` | ✅ by the statistics (2026-10-19): sine, switching sines, stop, a 2 s file played in full and stopped halfway, invalid requests reported, clean shutdown while playing; 0 resyncs throughout. ⏳ not yet confirmed by ear |
 | `--scan-timeout 5` | ✅ scanning stopped at 9.4 s, after the running cycle |
 | Button changes, board under load, `--max-rate`, broadcast, reconnect while streaming, Nunchuk plug/unplug | ⏳ not yet confirmed |

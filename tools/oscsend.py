@@ -7,7 +7,7 @@ Usage: python oscsend.py <port> <address> [value ...] [--host <host>] [--int | -
   --string  send all values as strings, numbers too
   --bundle  wrap the message in a bundle
 
-Examples: python oscsend.py 4322 /wiimosc/0/mote/rumble 1
+Examples: python oscsend.py 4322 /wiimosc/0/mote/rumble/pulse 1 300
           python oscsend.py 4322 /wiimosc/0/mote/speaker/file C:/sounds/click.wav
 """
 import socket

@@ -24,7 +24,7 @@ struct OscReceivedMessage;
     Addresses have the form <prefix>/<id>/<path>, see doc/Streaming.md. Values are only sent when they change. Buttons
     are sent immediately, continuous values (orientation, acceleration, ...) at most \c maxRate times per second.
 
-    It also takes OSC input (received()): <prefix>/<id>/mote/rumble switches a remote's rumble motor, and
+    It also takes OSC input (received()): <prefix>/<id>/mote/rumble/{trigger,pulse} switch a remote's rumble motor, and
     <prefix>/<id>/mote/speaker/{sine,file,stop} play sounds on its speaker.
  */
 class WiimoteStreamer : public AbstractHubListener
@@ -95,6 +95,16 @@ private:
         std::unique_ptr<WiimoteSpeaker> speaker; //!< plays player; destroyed first
     };
 
+    /*! \brief A remote's rumble, as last requested over OSC (mote/rumble/trigger or mote/rumble/pulse).
+
+        Each request replaces the previous one, so a trigger cuts a pulse short and vice versa.
+     */
+    struct RumbleRequest {
+        int state = -1;             //!< 1 on, 0 off, -1 not requested since connecting
+        bool isPulse = false;       //!< switches off at pulseEnd
+        Clock::time_point pulseEnd;
+    };
+
     std::string address(int id, const char *path) const;
     void send(const OscMessage &message);
 
@@ -109,6 +119,9 @@ private:
     void updateWiimote(int id, wiimote_t *wm, bool isSendingContinuous);
     void updateBoard(int id, wiimote_t *wm, bool isSendingContinuous);
     void applyRumble(int id, wiimote_t *wm);
+    /*! \brief Handles <prefix>/<id>/mote/rumble/<command>. Called from the receiver's thread. */
+    void receivedRumble(int id, const std::string &command, const OscReceivedMessage &message);
+    void setRumbleRequest(int id, const RumbleRequest &request);
     /*! \brief Handles <prefix>/<id>/mote/speaker/<command>. Called from the receiver's thread. */
     void receivedSpeaker(int id, const std::string &command, const OscReceivedMessage &message);
     static void resetSpeaker(Speaker *speaker);
@@ -119,12 +132,11 @@ private:
     Options mOptions;
     Device mDevices[WiimoteHub::sMaxDevices];
 
-    /*! \brief Rumble per id, as last requested over OSC: 1 on, 0 off, -1 not requested since connecting.
-
-        Written by the receiver's thread, applied by the device's thread. Kept apart from Device, which is reset by
-        assignment.
+    /*! \brief Rumble per id: written by the receiver's thread, applied by the device's thread (guarded by
+        mRumbleMutex). Kept apart from Device, which is reset by assignment.
      */
-    std::atomic<int> mRumbleRequests[WiimoteHub::sMaxDevices];
+    RumbleRequest mRumbleRequests[WiimoteHub::sMaxDevices];
+    std::mutex mRumbleMutex;
     Speaker mSpeakers[WiimoteHub::sMaxDevices]; //!< kept apart from Device for the same reason
     std::set<std::string> mIgnoredAddresses; //!< receiver's thread only
 };

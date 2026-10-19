@@ -11,7 +11,7 @@ Last updated: 2026-10-19.
 | Windows pairing (SYNC and 1+2 flows, re-pairing, stale cleanup) | ✅ working on hardware (SYNC tested; 1+2 untested) |
 | Device pickup, connect/disconnect, rumble/blink feedback | ✅ working |
 | `wiimosc-pair` (pair & test tool) | ✅ working |
-| `wiimosc-stream` (OSC) | ✅ working: Wiimote buttons/rpy/accel/gyro, Nunchuk, Balance Board (empty board only), battery, status; OSC input: rumble, speaker (`mote/speaker/{sine,file,stop}`; verified by the statistics, not yet by ear) |
+| `wiimosc-stream` (OSC) | ✅ working: Wiimote buttons/rpy/accel/gyro, Nunchuk, Balance Board (empty board only), battery, status; OSC input: rumble (`mote/rumble/{trigger,pulse}`), speaker (`mote/speaker/{sine,file,stop}`; verified by the statistics, not yet by ear) |
 | `wiimosc-speaker` (speaker prototype) | 🧪 macOS: audible, right pitch and timing, with a ~60 Hz buzz from the link's limit (measured by microphone). Windows (second machine): audible, 0 resyncs once the pairing scan has finished ([Speaker.md](Speaker.md)) |
 | macOS (pairing, input, OSC, fusion) | ✅ works on hardware with a Wiimote Plus (macOS 14.8): SYNC pairing, reconnect by button, streaming, `--shutdown-on-exit`. Input runs at ~67 reports/s instead of ~180 (§9). Board, 1+2, several remotes, speaker untested |
 | Linux | ❌ not implemented; CMake stops with `FATAL_ERROR` |

@@ -44,8 +44,10 @@ const auto sBatteryInterval = std::chrono::seconds(10);
 const auto sTareDuration = std::chrono::seconds(1);
 /*! \brief Below this total weight (kg), the board's center of mass is reported as 0,0 instead of noise. */
 const float sMinBoardWeight = 2.0f;
-/*! \brief Above this value, mote/rumble switches the motor on. */
+/*! \brief Above this intensity, mote/rumble/{trigger,pulse} switch the motor on. */
 const float sRumbleThreshold = 0.5f;
+const float sMaxRumblePulseMs = 3000.0f;
+const char sRumblePath[] = "mote/rumble/";
 /*! \brief Ignored addresses are printed once each, up to this many. */
 const size_t sMaxIgnoredAddresses = 64;
 /*! \brief The speaker's settings: wiimosc-speaker's defaults, which played best (see doc/Speaker.md). */
@@ -60,13 +62,11 @@ WiimoteStreamer::WiimoteStreamer(OscSender &sender, const Options &options)
 {
     if (mOptions.isIrEnabled && mOptions.fusion != FilterType::None && mOptions.irAnchors.empty())
         mOptions.irAnchors.push_back(IrAnchor{});
-    for (std::atomic<int> &request : mRumbleRequests)
-        request = -1;
 }
 
 void WiimoteStreamer::connected(int id, wiimote_t *wm, DeviceType type)
 {
-    mRumbleRequests[id] = -1;
+    setRumbleRequest(id, RumbleRequest{});
     Device &device = mDevices[id];
     device = Device{};
     device.type = type;
@@ -116,7 +116,7 @@ void WiimoteStreamer::disconnected(int id, DeviceType)
 {
     send(OscMessage(address(id, "status")).add(std::string("none")));
     mDevices[id] = Device{};
-    mRumbleRequests[id] = -1;
+    setRumbleRequest(id, RumbleRequest{});
     resetSpeaker(&mSpeakers[id]);
 }
 
@@ -224,10 +224,49 @@ void WiimoteStreamer::applyRumble(int id, wiimote_t *wm)
 {
     // Nothing until requested, so the hub's connection rumble runs undisturbed. Compared with the motor's actual
     // state rather than the last request, so a request made during that rumble outlasts its end.
-    const int request = mRumbleRequests[id];
+    int state;
+    {
+        std::lock_guard<std::mutex> lock(mRumbleMutex);
+        RumbleRequest &request = mRumbleRequests[id];
+        if (request.isPulse && Clock::now() >= request.pulseEnd) {
+            request.state = 0;
+            request.isPulse = false;
+        }
+        state = request.state;
+    }
     const bool isRumbling = WIIMOTE_IS_SET(wm, WIIMOTE_STATE_RUMBLE);
-    if (request >= 0 && (request == 1) != isRumbling)
-        wiiuse_rumble(wm, request);
+    if (state >= 0 && (state == 1) != isRumbling)
+        wiiuse_rumble(wm, state);
+}
+
+void WiimoteStreamer::receivedRumble(int id, const std::string &command, const OscReceivedMessage &message)
+{
+    float intensity;
+    RumbleRequest request;
+    if (command == "trigger") {
+        if (!message.toFloat(0, &intensity))
+            return ignore(message, "expects an intensity (0-1)");
+        request.state = intensity > sRumbleThreshold ? 1 : 0;
+    } else if (command == "pulse") {
+        float durationMs;
+        if (!message.toFloat(0, &intensity) || !message.toFloat(1, &durationMs))
+            return ignore(message, "expects an intensity (0-1) and a duration (ms)");
+        if (durationMs > sMaxRumblePulseMs)
+            durationMs = sMaxRumblePulseMs;
+        // A pulse that wouldn't rumble still overrides the ongoing request: it switches the motor off.
+        request.state = intensity > sRumbleThreshold && durationMs > 0.0f ? 1 : 0;
+        request.isPulse = request.state == 1;
+        request.pulseEnd = Clock::now() + std::chrono::microseconds(static_cast<long long>(durationMs * 1000.0f));
+    } else {
+        return ignore(message, "unknown address");
+    }
+    setRumbleRequest(id, request);
+}
+
+void WiimoteStreamer::setRumbleRequest(int id, const RumbleRequest &request)
+{
+    std::lock_guard<std::mutex> lock(mRumbleMutex);
+    mRumbleRequests[id] = request;
 }
 
 void WiimoteStreamer::received(const OscReceivedMessage &message)
@@ -247,16 +286,14 @@ void WiimoteStreamer::received(const OscReceivedMessage &message)
     const std::string path = addr.substr(position + 1);
 
     const bool isSpeaker = path.compare(0, sizeof(sSpeakerPath) - 1, sSpeakerPath) == 0;
-    if (path != "mote/rumble" && !isSpeaker)
+    const bool isRumble = path.compare(0, sizeof(sRumblePath) - 1, sRumblePath) == 0;
+    if (!isRumble && !isSpeaker)
         return ignore(message, "unknown address");
     if (id >= WiimoteHub::sMaxDevices)
         return ignore(message, "id out of range");
     if (isSpeaker)
         return receivedSpeaker(id, path.substr(sizeof(sSpeakerPath) - 1), message);
-    float value;
-    if (!message.toFloat(0, &value))
-        return ignore(message, "expects a number");
-    mRumbleRequests[id] = value > sRumbleThreshold ? 1 : 0;
+    receivedRumble(id, path.substr(sizeof(sRumblePath) - 1), message);
 }
 
 void WiimoteStreamer::receivedSpeaker(int id, const std::string &command, const OscReceivedMessage &message)
