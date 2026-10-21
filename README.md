@@ -2,7 +2,7 @@
 
 Cross-platform utility that pairs Nintendo Wiimotes (with Nunchuk) and the Wii Fit Balance Board, and turns their input into OSC messages.
 
-> **Status:** early. Automated pairing and OSC streaming work on Windows and macOS; the Linux backend isn't written yet. See [doc/Pairing.md](doc/Pairing.md) and [doc/Streaming.md](doc/Streaming.md).
+> **Status:** early. Automated pairing and OSC streaming work on Windows and macOS; on Linux they work without pairing (press SYNC or 1+2 every session). See [doc/Pairing.md](doc/Pairing.md) and [doc/Streaming.md](doc/Streaming.md).
 
 ## Why
 
@@ -10,12 +10,14 @@ Getting a Wiimote to talk to a computer normally means pairing it through the OS
 
 ## Building
 
-Requirements: CMake ≥ 3.16 and a C++17 compiler (Visual Studio 2022 on Windows, Xcode's command-line tools on macOS). wiiuse is included under `external/wiiuse` and is built as a static library.
+Requirements: CMake ≥ 3.16 and a C++17 compiler (Visual Studio 2022 on Windows, Xcode's command-line tools on macOS, GCC or Clang on Linux with the development packages of GLib/GIO and libsndfile, e.g. `glib2-devel libsndfile-devel` on Fedora, `libglib2.0-dev libsndfile1-dev` on Debian/Ubuntu). wiiuse is included under `external/wiiuse` and is built as a static library.
 
 ```
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 ```
+
+On Linux, bluetoothd must be running; it only does the discovery. Remotes aren't paired (see [doc/Pairing.md](doc/Pairing.md#linux-implementation)), so press SYNC or 1+2 each time a remote should connect.
 
 On macOS, the first run may ask to allow Bluetooth access for your terminal app (System Settings → Privacy & Security → Bluetooth).
 
@@ -98,5 +100,5 @@ The speaker is lo-fi by nature, and always plays at ~6000 Hz (ADPCM). That takes
 | | Pairing | Input (wiiuse) | OSC |
 |---|---|---|---|
 | Windows | ✅ | ✅ | ✅ |
-| Linux | planned (BlueZ) | ⚠️ supported by wiiuse (direct L2CAP), not yet working in practice | ✅ (portable code, untested) |
+| Linux | 🧪 discovery only, no pairing: SYNC or 1+2 every session (BlueZ over D-Bus) | 🧪 wiiuse over plain L2CAP; ~60 reports/s | ✅ |
 | macOS | ✅ (IOBluetooth) | ✅ (IOKit HID backend; ~67 reports/s) | ✅ |

@@ -7,7 +7,7 @@ This page records how wiimosc pairs Wiimotes and Balance Boards without the OS p
 wiiuse does not pair devices on any platform:
 
 - **Windows** (`os_win.c`): only lists HID devices that are already present, i.e. already paired through the OS.
-- **Linux** (`os_nix.c`): runs its own scan (`hci_inquiry`) and connects directly over L2CAP, so it skips OS pairing. The connection lasts only until the remote powers off.
+- **Linux** (`os_nix.c`): runs its own scan (`hci_inquiry`) and connects directly over L2CAP, so it skips OS pairing. The connection lasts only until the remote powers off. Needs libbluetooth; wiimosc replaces it (see [Linux implementation](#linux-implementation)).
 - **macOS** (`os_mac/`): scans with IOBluetooth and opens L2CAP channels directly. This no longer works on recent macOS versions (see [Wiimotes for AV-interactions](Wiimotes%20for%20AV-interactions.md)). wiimosc replaces it with an IOKit HID backend (`os_mac_hid.c`) that works like the Windows one (see [macOS implementation](#macos-implementation)).
 
 Pairing through the OS by hand means converting MAC addresses into binary PINs. On Windows it fails whenever the address contains a `0x00` byte.
@@ -124,6 +124,12 @@ Plugging in or unplugging an expansion also counts. After the timeout, the devic
 - `wiiuse.h`: new Windows member `dev_path[256]` stores the HID device path.
 - `wiiuse.c` / `os.h`: the per-slot initialization moved from `wiiuse_init` into `wiiuse_init_wiimote(wm, unid)`, so `os_win.c` can reset a slot.
 
+**Linux backend.** `os_nix.c` needs libbluetooth, scans itself with a privileged HCI inquiry, and reconnects every remote on every call.
+
+- `os_linux_l2cap.c` (new), `src/CMakeLists.txt`: plain L2CAP sockets without libbluetooth (the kernel's `sockaddr_l2` is declared locally), no scanning. The application passes the addresses of remotes in range to the new `wiiuse_linux_offer(address, is_motion_plus_inside)`; `wiiuse_os_find` connects to the next offered address that no slot has open, into the next unconnected slot (`reset_slot` first), like `os_win.c`.
+- `wiiuse.h`, `wiiuse_internal.h`: `WIIUSE_LINUX_L2CAP` replaces `WIIUSE_BLUEZ` on Linux (no `<bluetooth/...>` includes); members `out_sock`, `in_sock`, `dev_path[256]`, `dev_serial[64]` (both the address).
+- `CMakeLists.txt`: no `find_package(Bluez)`.
+
 **Windows I/O bugs.** These caused 5 s stalls on every connection, a MotionPlus that was never detected, bogus reports (`Unknown event ... [Code 0x0]` warnings, a battery level of 0.005), and probably the crash seen once at startup.
 
 - `os_win.c`, writes: `wiiuse_os_write` issued overlapped `WriteFile`s on the shared `hid_overlap` and never waited for them. A pending write's completion then signalled the *next read*, which returned "success" with an unfilled buffer (seen as report `0xcc`, MSVC's fill pattern for uninitialized stack memory). Synchronous reads waiting for a reply therefore missed it and timed out after 5 s. Also, the write buffer on the stack was still in use after the function returned. Now each write uses its own `OVERLAPPED` and waits for completion (`write_file_sync`, cancelled after 500 ms).
@@ -152,7 +158,7 @@ Noticed but left alone: `wiiuse_os_disconnect` returns early when the remote *is
 
 ## Other platforms
 
-- **Linux**: wiiuse's direct L2CAP connection works without pairing. For permanent SYNC pairings, BlueZ's built-in `wiimote` plugin supplies the reversed-address PIN automatically, so pairing can be scripted over D-Bus (`org.bluez.Device1.Pair`, then `Trusted = true`) or `bluetoothctl`. The kernel's `hid-wiimote` driver may claim the device; this needs checking against wiiuse.
+- **Linux**: implemented, see [Linux implementation](#linux-implementation).
 - **macOS**: implemented, see [macOS implementation](#macos-implementation).
 
 ## Status
@@ -179,4 +185,23 @@ Noticed but left alone: `wiiuse_os_disconnect` returns early when the remote *is
 | macOS: A presses, rumble + LED on connect | ✅ works |
 | macOS: `--shutdown-on-exit` (`closeConnection`) | ✅ link dropped, remote disconnected |
 | macOS: 1+2 pairing, Balance Board, two remotes at once, `--idle-timeout` | ⏳ untested |
-| Linux backend | ❌ not implemented |
+| Linux: build (GCC 15, Fedora 43) | ✅ builds, no libbluetooth needed |
+| Linux: SYNC and 1+2 discovery, L2CAP connection, wiiuse handshake, A presses, rumble on connect, MotionPlus calibration, streaming of buttons/accel/gyro/fusion | ✅ works with a Wiimote Plus (~235 OSC msg/s, but only ~60 input reports/s) |
+| Linux: Balance Board, several remotes, Nunchuk, `--shutdown-on-exit`, `--idle-timeout`, speaker | ⏳ untested |
+
+## Linux implementation
+
+wiimosc doesn't pair remotes on Linux. The reasoning, from trying the alternatives on Fedora 43 (kernel 6.18, BlueZ 5.86):
+
+- **bluetoothd can pair a remote**, and it does so without help: its built-in `wiimote` plugin supplies the PIN (`Device1.Pair()` over D-Bus works with no agent, the remote only has to be found by an inquiry first). Pairing was verified for a Wiimote Plus in SYNC mode. A paired remote reconnects through bluetoothd on a button press.
+- **But the kernel's `hid-wiimote` driver then takes the remote over**, and wiiuse can't coexist with it: on every status report it resends its own report mode and re-detects extensions and the MotionPlus. wiiuse sees stray "data packet when no request was made" warnings and unreadable calibrations, and the motion data stops. Buttons alone still work (through `/dev/hidrawN`).
+- **Without `hid-wiimote`, the kernel gives the remote no hidraw node at all.** Its quirk table lists the Wiimote as "has a special driver", so `hid-generic` refuses it even when the module is blocked (`install hid_wiimote /bin/false`). The only override is the global `hid.ignore_special_drivers=1`, which affects every HID device (touchpad, pen).
+- **So wiiuse talks L2CAP directly**, as upstream's `os_nix.c` and Dolphin do: a Wiimote accepts unauthenticated connections on PSM 0x11 (control) and 0x13 (interrupt), in SYNC and 1+2 mode alike. The remote must not be paired with bluetoothd, or it gets taken over as above; `removeStaleDevices()` therefore unpairs Nintendo devices at startup.
+
+What each part does:
+
+- `WiimotePairer_linux.cpp` (GIO/GDBus, no libbluetooth): starts a BR/EDR discovery on the first adapter, waits for the inquiry, and returns the Nintendo devices that were seen (RSSI is set) and aren't connected yet. The name is often unknown to BlueZ, so the class of device (peripheral, joystick or gamepad) decides, as on macOS. Gamepad means RVL-CNT-01-TR. `Method` is ignored. `disconnect()` calls `Device1.Disconnect`.
+- `WiimoteHub` hands each device found to `wiiuse_linux_offer()` (patch, see [wiiuse patches](#wiiuse-patches)), and the finder thread's `wiiuse_find()` connects to it.
+- `os_linux_l2cap.c` (wiiuse): declares the kernel's `sockaddr_l2` itself, connects both channels non-blocking (5 s timeout), and reads/writes with the `0xa1`/`0xa2` HID headers. It does no scanning.
+
+Consequences: SYNC or 1+2 has to be pressed every session, and the connection ends when the remote powers off. Input arrives at ~60 reports/s (Windows: ~180), probably because the link is in sniff mode, as on macOS. Not investigated yet.

@@ -6,6 +6,10 @@
 /*! \brief Discovers Nintendo RVL devices (Wiimote, Balance Board) via Bluetooth inquiry and pairs them at OS level.
 
     Once paired, the devices show up as regular HID devices, and can be opened by wiiuse.
+
+    Linux is the exception: remotes aren't paired there (a paired remote is taken over by the kernel's hid-wiimote
+    driver, which wiiuse can't work with). scanAndPair() only finds the remotes, which the hub hands to wiiuse to
+    connect to, so the Method is ignored and every session starts with SYNC or 1+2.
  */
 class WiimotePairer
 {
@@ -23,7 +27,22 @@ public:
     struct Device {
         std::string name;
         std::string address;
+        bool isMotionPlusInside = false; //!< Wiimote Plus, if the OS tells (Linux only)
     };
+
+    /*! \brief The button(s) to press on a remote for \a method, for messages to the user.
+
+        On Linux nothing is paired, so SYNC and 1+2 work alike.
+     */
+    static const char *buttonsFor(Method method)
+    {
+#ifdef __linux__
+        (void)method;
+        return "SYNC (or 1+2)";
+#else
+        return method == Method::SyncButton ? "SYNC" : "1+2";
+#endif
+    }
 
     WiimotePairer();
     ~WiimotePairer();

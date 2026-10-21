@@ -182,7 +182,7 @@ int main(int argc, char **argv)
         return 1;
     std::printf("streaming to %s:%d as %s/<id>/..., press %s on a remote to pair it (Ctrl+C to quit)\n",
                 host.c_str(), port, options.prefix.c_str(),
-                method == WiimotePairer::Method::SyncButton ? "SYNC" : "1+2");
+                WiimotePairer::buttonsFor(method));
     if (inPort != 0) {
         receiver.start([&streamer](const OscReceivedMessage &message) { streamer.received(message); });
         std::printf("receiving OSC on port %d\n", inPort);

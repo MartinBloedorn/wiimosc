@@ -60,8 +60,9 @@ std::string readAddress(const wiimote *wm)
     for (const wchar_t *c = serial; *c; ++c)
         ascii += static_cast<char>(*c);
     return WiimoteHub::normalizeAddress(ascii);
-#elif defined(__APPLE__)
-    // Filled by wiiuse's HID backend (wiimosc patch) from the HID serial number, e.g. "8c-cd-e8-c4-d5-0f".
+#elif defined(__APPLE__) || defined(__linux__)
+    // Filled by wiiuse's HID backends (wiimosc patch) from the HID serial number, e.g. "8c-cd-e8-c4-d5-0f" on macOS
+    // and "8c:cd:e8:c4:d5:0f" on Linux.
     return WiimoteHub::normalizeAddress(wm->dev_serial);
 #else
     (void)wm;
@@ -317,8 +318,15 @@ bool WiimoteHub::start(WiimotePairer::Method method)
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 continue;
             }
-            for (const auto &device : pairer->scanAndPair(method))
+            for (const auto &device : pairer->scanAndPair(method)) {
+#ifdef __linux__
+                // Nothing is paired on Linux; wiiuse connects to the remote itself.
+                std::printf("found %s [%s]\n", device.name.c_str(), device.address.c_str());
+                wiiuse_linux_offer(device.address.c_str(), device.isMotionPlusInside);
+#else
                 std::printf("paired %s [%s]\n", device.name.c_str(), device.address.c_str());
+#endif
+            }
             *isScanning = false;
         }
     }).detach();
@@ -468,7 +476,7 @@ void WiimoteHub::runFinder()
                 wiimote *placeholder = mPlaceholders[i];
                 placeholder->state = WIIMOTE_STATE_CONNECTED;
                 std::memcpy(placeholder->dev_path, mWiimotes[i]->dev_path, sizeof(placeholder->dev_path));
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(__linux__)
                 std::memcpy(placeholder->dev_serial, mWiimotes[i]->dev_serial, sizeof(placeholder->dev_serial));
 #endif
                 slots[count++] = placeholder;

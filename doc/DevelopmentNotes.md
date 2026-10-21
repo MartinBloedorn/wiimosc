@@ -2,7 +2,7 @@
 
 This is a handover for agents continuing work on wiimosc. It collects the technical decisions, the findings behind them (many found the hard way, on hardware), the current state, and open work. The topic docs have more detail: [Pairing.md](Pairing.md) (Bluetooth pairing, hub, wiiuse patches), [Streaming.md](Streaming.md) (OSC tool and address reference), [Fusion.md](Fusion.md) (sensor fusion: design, measurements, tuning) and [Speaker.md](Speaker.md) (speaker prototype). Coding style lives in [../CLAUDE.md](../CLAUDE.md).
 
-Last updated: 2026-10-19.
+Last updated: 2026-10-21.
 
 ## 1. State of the project
 
@@ -14,7 +14,7 @@ Last updated: 2026-10-19.
 | `wiimosc-stream` (OSC) | ✅ working: Wiimote buttons/rpy/accel/gyro, Nunchuk, Balance Board (empty board only), battery, status; OSC input: rumble (`mote/rumble/{trigger,pulse}`), speaker (`mote/speaker/{sine,file,stop}`; verified by the statistics, not yet by ear) |
 | `wiimosc-speaker` (speaker prototype) | 🧪 macOS: audible, right pitch and timing, with a ~60 Hz buzz from the link's limit (measured by microphone). Windows (second machine): audible, 0 resyncs once the pairing scan has finished ([Speaker.md](Speaker.md)) |
 | macOS (pairing, input, OSC, fusion) | ✅ works on hardware with a Wiimote Plus (macOS 14.8): SYNC pairing, reconnect by button, streaming, `--shutdown-on-exit`. Input runs at ~67 reports/s instead of ~180 (§9). Board, 1+2, several remotes, speaker untested |
-| Linux | ❌ not implemented; CMake stops with `FATAL_ERROR` |
+| Linux | 🧪 builds; works on hardware with a Wiimote Plus (Fedora 43): discovery over D-Bus, connection over plain L2CAP, **no pairing** (SYNC or 1+2 every session, both verified), streaming and fusion. ~60 input reports/s (§9). Board, several remotes, Nunchuk, speaker untested |
 | Sensor fusion (`--fusion madg`: fused rpy with yaw, quaternion) | ✅ works on hardware (user-confirmed); gyro scale and accelerometer handling tuned on recordings of both remotes ([Fusion.md](Fusion.md), §6c) |
 | IR anchors (`--ir anchor=...`: yaw correction by IR emitters) | 🧪 camera sign fixed after the first live test, verified on a sensor bar recording; not yet re-tested live (§6c) |
 
@@ -29,7 +29,8 @@ Last updated: 2026-10-19.
 ## 2. Layout & build
 
 ```
-src/pairing/   WiimotePairer: Bluetooth inquiry + OS-level pairing (WiimotePairer_win.cpp / WiimotePairer_mac.mm),
+src/pairing/   WiimotePairer: Bluetooth inquiry + OS-level pairing (WiimotePairer_win.cpp / WiimotePairer_mac.mm); on Linux
+               (WiimotePairer_linux.cpp, D-Bus) discovery only, nothing is paired (§3c),
                Info.plist (Bluetooth usage description, embedded into the macOS executables)
 src/hub/       WiimoteHub + AbstractHubListener: threads, device pickup, feedback (shared by both tools)
 src/osc/       OscMessage / OscSender: minimal OSC 1.0 encoder + UDP sender; OscReceiver: parser + UDP receiver
@@ -43,6 +44,7 @@ data/recordings/  raw motion recordings from real remotes + README (format, cont
 src/pairtool/  wiimosc-pair: listener that prints A presses + CLI
 src/speaker/   library speaker: WiimoteSpeaker (speaker protocol, paced sender), Audio (decoding, resampling),
                SoundSources (SineSource, SoundPlayer); main.cpp: wiimosc-speaker CLI
+               (decoding: Audio_win.cpp / Audio_mac.cpp / Audio_linux.cpp, libsndfile)
 external/wiiuse/  vendored wiiuse 0.16.0, PATCHED (see §5)
 external/Fusion/  xioTechnologies Fusion v1.3.3 (MIT, submodule, unmodified): Madgwick's AHRS in C
 tools/         oscdump.py, oscrate.py, oscsend.py, timestamp.py (testing helpers, see §8)
@@ -62,6 +64,7 @@ cmake --build build -j8
 - Fusion is built from its `Fusion/` subfolder (library only). **Its headers only compile as C++20** in MSVC (C99 designated initializers), so only the `motionfusion` target is C++20, and only `MadgwickFilter.cpp` includes them. Keep Fusion types out of `src/fusion` headers.
 - Libraries: `pairing` (bthprops, ws2_32), `hub` (pairing + wiiuse, hid), `osc` (ws2_32), `motionfusion` (Fusion; no wiiuse dependency), `speaker` (+ Media Foundation, winmm; built with `NOMINMAX`, since `windows.h`'s `min`/`max` macros break `std::min`). Executables: `wiimosc-pair`, `wiimosc-stream` (uses `speaker`), `wiimosc-speaker`.
 - **macOS**: the `pairing` library is Objective-C++ (`enable_language(OBJCXX)`, ARC) and links IOBluetooth + Foundation; wiiuse links IOKit + CoreFoundation; `wiimosc-speaker` uses AudioToolbox (`Audio_mac.cpp`). `pairing` adds a linker option to every executable that uses it, embedding `src/pairing/Info.plist` (`NSBluetoothAlwaysUsageDescription`): macOS kills processes that access Bluetooth without one.
+- **Linux** (Fedora 43, GCC 15): the same `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release` as on macOS. `pairing` links GIO (`pkg-config gio-2.0`: D-Bus to bluetoothd), `speaker` links libsndfile (wav, flac, ogg, mp3; no m4a). No libbluetooth, no root, no udev rules.
 - **Linking fails with `LNK1104` while the exe is running** (often the user's own instance). Never kill the user's process; ask, or build the Debug config to check compilation.
 
 ## 3. Pairing (Windows): findings
@@ -86,6 +89,15 @@ Details in [Pairing.md](Pairing.md#macos-implementation). The essentials:
 - **The PIN needs private API** (as Dolphin's WiimotePair does): `setUserDefinedPincode:YES` and `IOBluetoothCoreBluetoothCoordinator pairPeer:forType:withKey:` with the raw bytes. The public `replyPINCode:` mangles bytes ≥ `0x80` via `NSString` and failed with `0xe00002bc`.
 - Unknown device names come back as the address; only the asynchronous `remoteNameRequest:<delegate>` resolves them (class of device is the fallback). Re-pairing removes the old pairing first (private `-remove`) and waits 1 s.
 - `IOBluetoothDevice closeConnection` powers a remote off (`--shutdown-on-exit`, `--idle-timeout`).
+
+## 3c. Linux: findings
+
+Details in [Pairing.md](Pairing.md#linux-implementation). The essentials:
+
+- **Nothing is paired.** bluetoothd's `wiimote` plugin pairs remotes fine, but a paired remote is taken over by the kernel's `hid-wiimote` driver, which resets the report mode and re-detects extensions on every status report: wiiuse's handshake breaks (no MotionPlus calibration, no motion data). Blocking the driver doesn't help: the kernel then gives the remote no hidraw node (quirk table), and the only override is the global `hid.ignore_special_drivers`. The first hidraw-based backend was dropped for these reasons.
+- **wiiuse connects over L2CAP** (PSM 0x11/0x13) to remotes in SYNC or 1+2 mode; unauthenticated connections are accepted. `os_linux_l2cap.c` has no scanning: `WiimotePairer::scanAndPair()` (BlueZ discovery over D-Bus) returns the remotes in range, the hub passes them to `wiiuse_linux_offer()`, and the finder's `wiiuse_find()` connects.
+- BlueZ often doesn't know the remote's name after an inquiry; the class of device identifies it (as on macOS). `removeStaleDevices()` unpairs Nintendo devices left over in bluetoothd, since those would reconnect through it.
+- The address comes from the address that was offered (`dev_serial`).
 
 ## 4. Hub architecture & threading
 
@@ -199,7 +211,7 @@ The full reference (design, conventions, measurements, tuning method, open work)
 ## 9. Open work & known issues
 
 - **Unverified on hardware**: `--ir` streaming over OSC (the camera's axes are measured: x grows when pointing right), and the IR anchors live after the sign fix (Fusion.md §10 lists the checks); 1+2 pairing; power-cycling a remote *while streaming*; board under load (weight, corners, xy, tare offsets); button changes over OSC (buttons were verified in `wiimosc-pair`); `--max-rate`; broadcast targets; Nunchuk plug/unplug while streaming; `--gyro` together with a Nunchuk.
-- **Linux backend**: wiiuse's BlueZ path connects over L2CAP without pairing. For permanent SYNC pairing, BlueZ's `wiimote` plugin supplies the PIN, so pairing could go over D-Bus (`Device1.Pair`, `Trusted`). Check the kernel `hid-wiimote` driver claiming devices. The user couldn't get wiiuse working on Linux before.
+- **Linux**: input arrives at ~60 reports/s (Windows ~180), probably sniff mode as on macOS; not investigated (`btmgmt`/`hcitool` could show the link mode). Untested: the Balance Board, several remotes, a Nunchuk, `--shutdown-on-exit` (`Device1.Disconnect` on an unpaired device), `--idle-timeout`, the speaker, reconnecting a remote that powered off. The pairing scan offers a remote again each cycle while it's discoverable and not yet connected; a failed connection only logs a warning. No permanent pairing is possible without disabling the kernel's special-driver handling (§3c).
 - **macOS**: input arrives at **~67 reports/s** (Windows: ~180), i.e. every ~15 ms, most likely because macOS puts the HID link into Bluetooth sniff mode. The fusion measures dt and works, but with less gyro resolution in time; there's no public API to change the sniff interval. Untested on macOS: 1+2 pairing, the Balance Board, several remotes at once, `--idle-timeout`, the speaker, a Nunchuk. The private pairing API may disappear in a future macOS (the tool then warns and falls back to the public PIN reply, which fails for addresses with bytes ≥ `0x80`).
 - No rumble on connect was noticed with `--fusion` (seen on macOS; enabling the MotionPlus right after connecting may cut it short). Not checked on Windows.
 - The `os_win.c` / `os_mac_hid.c` find/I/O patches are platform-specific; a Linux backend would need equivalents (re-scan without clobbering, per-device threads).

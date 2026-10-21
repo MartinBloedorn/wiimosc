@@ -408,7 +408,7 @@ int main(int argc, char **argv)
     if (!hub.start(method))
         return 1;
     std::printf("scanning, press %s on a remote to pair it; playing on [%d] once it connects%s (Ctrl+C to quit)\n",
-                method == WiimotePairer::Method::SyncButton ? "SYNC" : "1+2", targetId,
+                WiimotePairer::buttonsFor(method), targetId,
                 mode == TestMode::Trigger ? ", on every press of A" : "");
 
     bool isPaused = false;

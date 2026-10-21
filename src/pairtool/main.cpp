@@ -101,7 +101,7 @@ int main(int argc, char **argv)
     if (!hub.start(method))
         return 1;
     std::printf("scanning, press %s on a remote to pair it, A to test it (Ctrl+C to quit)\n",
-                method == WiimotePairer::Method::SyncButton ? "SYNC" : "1+2");
+                WiimotePairer::buttonsFor(method));
 
     while (sIsRunning)
         WiimotePairer::processEvents(100);
