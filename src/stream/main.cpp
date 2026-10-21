@@ -42,9 +42,10 @@ void printUsage()
                 "                     strength 0-1, default 1 = set; with --fusion)\n"
                 "  --max-rate <hz>    max. rate of continuous values per device, 0 = unlimited (default 0)\n"
                 "  --gyro             enable the MotionPlus gyro on supporting remotes (hides a Nunchuk)\n"
-                "  --fusion <madg|off>\n"
+                "  --fusion [madg|off]\n"
                 "                     sensor fusion on remotes with a MotionPlus (hides a Nunchuk): fused mote/rpy\n"
-                "                     including yaw, and mote/quat; madg = Madgwick's AHRS (default off)\n"
+                "                     including yaw, and mote/quat; madg = Madgwick's AHRS, the default filter.\n"
+                "                     The remote rumbles briefly once it's calibrated (default: no fusion)\n"
                 "  --tare             zero the Balance Board after connecting (keep it empty)\n"
                 "  --ir [anchor=<yaw[:elevation],...>]\n"
                 "                     enable the IR camera, and stream the IR sources it sees. With --fusion, IR\n"
@@ -98,11 +99,11 @@ int main(int argc, char **argv)
             options.maxRate = std::atoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--gyro") == 0) {
             options.isGyroEnabled = true;
-        } else if (std::strcmp(argv[i], "--fusion") == 0 && hasValue) {
-            if (!parseFilterType(argv[++i], &options.fusion)) {
-                printUsage();
-                return 1;
-            }
+        } else if (std::strcmp(argv[i], "--fusion") == 0) {
+            // The filter's name is optional: the next argument is only taken if it is one.
+            options.fusion = FilterType::Madgwick;
+            if (hasValue && parseFilterType(argv[i + 1], &options.fusion))
+                ++i;
         } else if (std::strcmp(argv[i], "--tare") == 0) {
             options.isTaring = true;
         } else if (std::strcmp(argv[i], "--ir") == 0) {

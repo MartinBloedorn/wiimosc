@@ -145,6 +145,8 @@ Plugging in or unplugging an expansion also counts. After the timeout, the devic
 - `wiiuse.h`: macOS members `hid_device`, `hid_reports`, `dev_path[256]` (IORegistry entry id) and `dev_serial[64]` (HID serial number, which is the Bluetooth address, e.g. `8c-cd-e8-c4-d5-0f`; the hub reads the address from it). A remote is also considered open if a connected slot has the same serial.
 - `src/CMakeLists.txt`: builds `os_mac_hid.c` on Apple and links IOKit and CoreFoundation instead of IOBluetooth.
 
+**Rumble cut short.** The remote takes the rumble motor's state from bit 0 of the first byte of *every* output report, but `wiiuse_send` only set it on LED, rumble and status reports (the report type sets it itself). A register write or read, or enabling the IR camera, switched the motor off. With `--fusion` (or `--gyro`, `--ir`), the connection rumble was therefore cut off within milliseconds by the MotionPlus setup. `wiiuse.c`: `wiiuse_send` sets the bit on every report while the rumble is on.
+
 Noticed but left alone: `wiiuse_os_disconnect` returns early when the remote *is* connected, which looks inverted. As a result, `wiiuse_cleanup` doesn't close the handles of connected remotes. This is harmless at process exit.
 
 ## Decisions

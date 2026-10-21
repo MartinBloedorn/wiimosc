@@ -85,6 +85,15 @@ public:
         }
     }
 
+    /*! \brief Waits for the rumble to end, and stops it; the board's blinking goes on in update(). */
+    void finishRumble()
+    {
+        if (mIsBoard || !mIsActive)
+            return;
+        std::this_thread::sleep_until(mStart + sRumbleDuration);
+        update();
+    }
+
     void update()
     {
         if (!mIsActive)
@@ -515,6 +524,8 @@ void WiimoteHub::runDevice(int index, int id, DeviceType type, std::string addre
 
     std::printf("[%d] %s %s connected\n", id, deviceTypeName(type), printedAddress);
     Feedback feedback(wm, id, type);
+    // The listener's setup can block (enabling the MotionPlus: ~0.5 s), which would stretch the rumble.
+    feedback.finishRumble();
     if (mListener)
         mListener->connected(id, wm, type);
     IdleWatcher idleWatcher(wm);

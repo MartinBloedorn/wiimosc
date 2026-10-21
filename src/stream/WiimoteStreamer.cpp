@@ -48,6 +48,11 @@ const float sMinBoardWeight = 2.0f;
 /*! \brief Above this intensity, mote/rumble/{trigger,pulse} switch the motor on. */
 const float sRumbleThreshold = 0.5f;
 const float sMaxRumblePulseMs = 3000.0f;
+/*! \brief The rumble that tells the user the fusion is ready, after the calibration at rest.
+
+    Shorter than the hub's connection rumble (300 ms): on a table, the same length felt longer than in the hand.
+ */
+const auto sReadyRumbleDuration = std::chrono::milliseconds(200);
 const char sRumblePath[] = "mote/rumble/";
 /*! \brief Ignored addresses are printed once each, up to this many. */
 const size_t sMaxIgnoredAddresses = 64;
@@ -202,6 +207,12 @@ void WiimoteStreamer::updateFusion(int id, wiimote_t *wm)
         std::printf("[%d] fusion: ready (gyro bias %.2f, %.2f, %.2f deg/s; %.0f reports/s)%s\n", id,
                     setup.gyroBias.x, setup.gyroBias.y, setup.gyroBias.z, setup.sampleRate,
                     device.fusion->irCorrection() ? "; point at the home anchor to sync the yaw" : "");
+        // Like the hub's connection rumble, a pulse tells the user the remote can be picked up.
+        RumbleRequest ready;
+        ready.state = 1;
+        ready.isPulse = true;
+        ready.pulseEnd = Clock::now() + sReadyRumbleDuration;
+        setRumbleRequest(id, ready);
     }
     const IrAnchorCorrection *correction = device.fusion->irCorrection();
     const bool isSynced = correction && correction->isSynced();

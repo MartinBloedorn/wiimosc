@@ -4,7 +4,7 @@
 
 ```
 wiimosc-stream --host 127.0.0.1 --port 4321 --prefix wiimosc [--in-port 4322] [--max-rate 60] [--gyro]
-               [--fusion madg] [--tare] [--ir [anchor=0,-60,60]] [--scan-timeout 30]
+               [--fusion] [--tare] [--ir [anchor=0,-60,60]] [--scan-timeout 30]
 ```
 
 | Option | Default | Meaning |
@@ -15,7 +15,7 @@ wiimosc-stream --host 127.0.0.1 --port 4321 --prefix wiimosc [--in-port 4322] [-
 | `--in-port <port>` | off | Receives OSC on this UDP port, on all interfaces, to control the devices. See [Input](#input---in-port). |
 | `--max-rate` | `0` | Max. rate (Hz) of continuous values per device; `0` = unlimited. Buttons and status messages are never limited. |
 | `--gyro` | off | Activates the MotionPlus on Wiimote Plus remotes and streams `mote/gyro`. A Nunchuk on such a remote is then not read. |
-| `--fusion <madg\|off>` | `off` | Sensor fusion on Wiimote Plus remotes: activates the MotionPlus (a Nunchuk is then not read), replaces `mote/rpy` with fused angles including yaw, and adds `mote/quat`. `madg` = Madgwick's AHRS ([xioTechnologies Fusion](https://github.com/xioTechnologies/Fusion)). `off` keeps wiiuse's own `mote/rpy`. See [Sensor fusion](#sensor-fusion---fusion). |
+| `--fusion [madg\|off]` | off; `madg` if given without a filter | Sensor fusion on Wiimote Plus remotes: activates the MotionPlus (a Nunchuk is then not read), replaces `mote/rpy` with fused angles including yaw, and adds `mote/quat`. `madg` = Madgwick's AHRS ([xioTechnologies Fusion](https://github.com/xioTechnologies/Fusion)), the only filter so far, so `--fusion` alone is enough. `off` keeps wiiuse's own `mote/rpy`. See [Sensor fusion](#sensor-fusion---fusion). |
 | `--tare` | off | Zeroes the Balance Board after connecting: averages its sensors for 1 s, keep it empty. |
 | `--ir [anchor=<yaw[:elevation]>,...]` | off | Activates the Wiimotes' IR cameras, and streams the IR sources they see (`mote/ir/...`). With `--fusion`, IR anchors also correct the fused yaw: the first is a sensor bar (home), the others single IR sources, at the given yaw (and optionally elevation), in degrees as in `mote/rpy`. Without `anchor=`, there's just the home anchor, at yaw 0. `anchor=` without `--fusion` is an error. See [IR anchors](#ir-anchors---ir-anchor). |
 | `--ir-sensitivity <1-5>` | `3` | IR camera sensitivity (wiiuse's presets; 5 picks up the faintest sources) |
@@ -83,7 +83,7 @@ With `--in-port <port>`, the streamer also receives OSC on that UDP port, and ta
 - **Rumble is on/off only**: wiiuse switches the motor, which has no intensity levels; the intensity is thresholded.
 - **The last rumble request wins**: `trigger` and `pulse` replace whatever is ongoing. A trigger cuts a pulse short (`trigger 1` keeps the motor on, `trigger 0` stops it), and a pulse ends a trigger's rumble when it runs out, or restarts a running pulse's timer.
 - **Timing**: a request takes effect on the device's next poll (~10 ms), plus the write to the remote (~15 ms on Windows). The end of a pulse is checked on each poll as well, so pulses run up to ~10 ms longer than requested, and very short ones (below ~20 ms) may hardly be felt. (`mote/rumble` was renamed to `mote/rumble/trigger` on 2026-10-19.)
-- **Connection rumble**: the hub's short rumble on connect runs as usual until the first request for that remote. Requests for ids that aren't connected are dropped, and a remote that reconnects starts with the motor off.
+- **Connection rumble**: the hub's short rumble on connect (300 ms) ends before the streamer sets the remote up, which can block for ~0.5 s (MotionPlus) and used to stretch it; requests sent meanwhile take effect afterwards. With `--fusion`, the rumble when the fusion is ready is a pulse like `mote/rumble/pulse 1 200`: a request that arrives meanwhile replaces it, and it replaces an ongoing one. Requests for ids that aren't connected are dropped, and a remote that reconnects starts with the motor off.
 - **Quitting** (Ctrl+C) switches off the motor of any remote still rumbling, and its speaker.
 - **Speaker**: uses `wiimosc-speaker`'s defaults, which played best: ADPCM at the speaker's native 6000 Hz, full volume, asynchronous writes. See [Speaker](Speaker.md).
   - **One sound at a time:** each request replaces the current sound.
@@ -119,7 +119,7 @@ With `--in-port <port>`, the streamer also receives OSC on that UDP port, and ta
 
 ## Sensor fusion (`--fusion`)
 
-- **Startup**: after the MotionPlus is activated, wiimosc reads its factory calibration, then waits until the remote has been **still for 1 s** (lying on a table, or held steadily). Any movement restarts that wait. It measures the gyro's bias there, and starts with the remote's actual pitch and roll, and **yaw 0 = the heading at that moment**. The terminal shows each step: `fusion: MotionPlus calibration read ...`, then `fusion: ready (gyro bias ...; N reports/s)`. Until then, `mote/rpy` and `mote/quat` aren't sent.
+- **Startup**: after the MotionPlus is activated, wiimosc reads its factory calibration, then waits until the remote has been **still for 1 s** (lying on a table, or held steadily). Any movement restarts that wait. It measures the gyro's bias there, and starts with the remote's actual pitch and roll, and **yaw 0 = the heading at that moment**. The terminal shows each step: `fusion: MotionPlus calibration read ...`, then `fusion: ready (gyro bias ...; N reports/s)`. **Once ready, the remote rumbles for 200 ms**, so it can be picked up (shorter than the 300 ms on connecting, since a rumble on a table feels longer). Until then, `mote/rpy` and `mote/quat` aren't sent.
 - **Angles**: `mote/rpy` has the same meaning and signs for roll and pitch as without fusion (wiiuse's accelerometer angles), but stays valid while the remote moves. Yaw is positive when turning left (counter-clockwise seen from above). Order: yaw, then pitch, then roll. Pointing straight up or down, yaw and roll can't be told apart (gimbal lock); `mote/quat` has no such problem.
 - **Drift**: the accelerometer keeps pitch and roll correct over time. **Yaw is from the gyro alone and drifts** slowly, unless IR anchors or [yaw hints](#yaw-hints-motehintyaw) correct it. The bias is re-estimated whenever the remote rests for 3 s, which slows the drift but can't undo what has accumulated. Very slow, steady turns (below ~3 deg/s for several seconds) can be mistaken for bias.
 - **Fast movement**: while the remote is swung or shaken (acceleration more than 20% off 1 g), the accelerometer is ignored and the gyro carries the orientation alone. Very vigorous motion can leave pitch and roll off by ~10° (the gyro saturates at ~1700 deg/s). Once the remote is still, they return to the accelerometer's within ~1 s.
@@ -132,7 +132,7 @@ With `--in-port <port>`, the streamer also receives OSC on that UDP port, and ta
 With `--ir` and `--fusion`, IR emitters at known directions correct the fused yaw, so it stays right over a wide range of angles, e.g. for pointing at many things in a room. The design and its assumptions are in [Fusion.md §10](Fusion.md#10-ir-anchors).
 
 ```
-wiimosc-stream --fusion madg --ir anchor=0,-60,60:20
+wiimosc-stream --fusion --ir anchor=0,-60,60:20
 ```
 
 - **Anchors**: a comma-separated list of `yaw[:elevation]`, in degrees as in `mote/rpy` (yaw positive to the left, elevation like pitch, positive up). The first is the **home anchor**, a sensor bar (two sources side by side; that's also where a screen would be). The others are **single IR sources**. Without `anchor=`, there's only the home anchor, at yaw 0. Elevations are optional; given, they also rule out sources at other heights (±15°), e.g. reflections on a table.
@@ -192,6 +192,8 @@ python tools/oscsend.py 4322 /wiimosc/0/mote/hint/yaw 90 0.1   # one tenth of th
 | `--in-port`: `mote/rumble` (now `mote/rumble/trigger`) on a remote | ✅ user-confirmed on a remote (2026-10-19) |
 | `--in-port`: `mote/rumble/pulse`, overriding between trigger and pulse | ✅ user-confirmed on remotes (2026-10-19) |
 | `--in-port`: `mote/speaker/{sine,file,stop}` | ✅ by the statistics (2026-10-19): sine, switching sines, stop, a 2 s file played in full and stopped halfway, invalid requests reported, clean shutdown while playing; 0 resyncs throughout. ⏳ not yet confirmed by ear |
+| `--fusion` without a filter name; rumble once the fusion is ready | ✅ user-confirmed on a Wiimote Plus (Linux, 2026-10-21); traced output reports: ready rumble 301 ms, the same as `wiimosc-pair`'s connection rumble (310 ms), but it felt longer, hence 200 ms now (user-confirmed: feels right) |
+| Connection rumble with `--fusion` (wiiuse rumble-bit fix, rumble ends before the setup) | ✅ user-confirmed: as short as `wiimosc-pair`'s; traced before the hub change (it survived the MotionPlus setup, but lasted 500 ms) |
 | `--in-port`: `mote/hint/yaw` | ✅ on a resting Wiimote Plus (Linux, 2026-10-21): snap, strength 0, repeated 0.2 steps (exact exponential approach), wrap across ±180°, strength clamping, stable afterwards; replay output with IR anchors unchanged by the refactor (byte-identical). ⏳ the 80° pitch gate, hints while moving, overruling IR anchors |
 | `--scan-timeout 5` | ✅ scanning stopped at 9.4 s, after the running cycle |
 | Button changes, board under load, `--max-rate`, broadcast, reconnect while streaming, Nunchuk plug/unplug | ⏳ not yet confirmed |
