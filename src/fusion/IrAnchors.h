@@ -30,9 +30,10 @@ struct IrFrame {
 
 /*! \brief Corrects the yaw of an orientation filter with IR anchors.
 
-    It keeps a yaw offset that is applied to the filter's orientation. Seeing the home anchor sets it (and resets it
-    if it's far off); after that, every anchor in view nudges it towards that anchor's yaw. A single source is taken
-    for the anchor nearest to it, if it's near enough; until the home anchor was seen, single sources aren't used.
+    It computes changes to a yaw offset that MotionFusion applies to the filter's orientation. Seeing the home anchor
+    sets it (and resets it if it's far off); after that, every anchor in view nudges it towards that anchor's yaw. A
+    single source is taken for the anchor nearest to it, if it's near enough; until the home anchor was seen, single
+    sources aren't used.
 
     Assumes that the remote stays at about the same place: the anchors' directions are only valid from there.
  */
@@ -41,26 +42,26 @@ class IrAnchorCorrection
 public:
     explicit IrAnchorCorrection(std::vector<IrAnchor> anchors);
 
-    /*! \brief Forgets the offset, e.g. when the filter restarted. */
+    /*! \brief Forgets the sync, e.g. when the filter restarted. */
     void restart();
 
-    /*! \brief Adds one report: \a filtered is the filter's orientation, \a rotationRate how fast it turns (deg/s). */
-    void update(float dt, const Quaternion &filtered, float rotationRate, const IrFrame &frame);
+    /*! \brief Adds one report, and returns the change to the yaw offset (deg).
 
-    /*! \brief The filter's orientation \a q, corrected. */
-    Quaternion correct(const Quaternion &q) const;
+        \a corrected is the orientation with the current offset, \a rotationRate how fast it turns (deg/s). Without
+        \a isCorrecting, it only finds the anchor in view, and returns 0.
+     */
+    float update(float dt, const Quaternion &corrected, float rotationRate, const IrFrame &frame,
+                 bool isCorrecting = true);
 
     /*! \brief Index of the anchor in view in the last report, or -1. */
     int anchorInView() const { return mAnchorInView; }
     /*! \brief Whether the home anchor was seen since the start, so the yaw refers to the anchors. */
     bool isSynced() const { return mIsSynced; }
-    float yawOffset() const { return mYawOffset; }
 
 private:
-    void nudge(float dt, float residual, float rotationRate);
+    float nudge(float dt, float residual, float rotationRate) const;
 
     std::vector<IrAnchor> mAnchors;
-    float mYawOffset = 0.0f;
     bool mIsSynced = false;
     int mPairReports = 0; //!< consecutive reports with a far-off home anchor in view
     int mAnchorInView = -1;

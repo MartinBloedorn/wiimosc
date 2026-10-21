@@ -39,3 +39,6 @@ Vector3 rotate(const Quaternion &q, const Vector3 &v);
 
 /*! \brief A rotation about the world's vertical by \a degrees, i.e. one that adds that much yaw. */
 Quaternion yawRotation(float degrees);
+
+/*! \brief \a degrees wrapped to (-180, 180]. */
+float wrapDegrees(float degrees);

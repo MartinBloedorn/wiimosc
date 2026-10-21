@@ -15,6 +15,10 @@ const float sRestGyroSpread = 4.0f;
 const float sRestAccelSpread = 0.1f;
 /*! \brief Longer gaps between reports (a stalled link) are integrated as this long, in seconds. */
 const float sMaxDt = 0.1f;
+/*! \brief How long (s) after a yaw hint the IR anchors stay overruled. */
+const double sHintHold = 1.0;
+/*! \brief Yaw hints are ignored above this pitch (deg, up or down). */
+const float sMaxHintPitch = 80.0f;
 
 float magnitude(const Vector3 &v)
 {
@@ -61,6 +65,8 @@ void MotionFusion::restart()
     mIsReady = false;
     mHasTime = false;
     mWindowCount = 0;
+    mYawOffset = 0.0f;
+    mHintHoldEnd = 0.0;
     if (mIrCorrection)
         mIrCorrection->restart();
 }
@@ -94,15 +100,29 @@ void MotionFusion::addReport(double time, const uint16_t rawGyro[3], const bool 
 
     if (mIrCorrection && ir) {
         const Vector3 rate{gyro.x - mSetup.gyroBias.x, gyro.y - mSetup.gyroBias.y, gyro.z - mSetup.gyroBias.z};
-        mIrCorrection->update(sample.dt, mFilter->orientation(), magnitude(rate), *ir);
+        const float change = mIrCorrection->update(sample.dt, orientation(), magnitude(rate), *ir,
+                                                   time >= mHintHoldEnd);
+        mYawOffset = wrapDegrees(mYawOffset + change);
     }
+}
+
+bool MotionFusion::hintYaw(float yaw, float strength)
+{
+    if (!mIsReady)
+        return false;
+    const EulerAngles angles = toEulerAngles(orientation());
+    if (std::fabs(angles.pitch) > sMaxHintPitch)
+        return false;
+    mYawOffset = wrapDegrees(mYawOffset + std::clamp(strength, 0.0f, 1.0f) * wrapDegrees(yaw - angles.yaw));
+    mHintHoldEnd = mLastTime + sHintHold;
+    return true;
 }
 
 Quaternion MotionFusion::orientation() const
 {
     if (!mIsReady)
         return Quaternion{};
-    return mIrCorrection ? mIrCorrection->correct(mFilter->orientation()) : mFilter->orientation();
+    return mYawOffset == 0.0f ? mFilter->orientation() : multiply(yawRotation(mYawOffset), mFilter->orientation());
 }
 
 bool MotionFusion::collectRest(double time, const Vector3 &gyro, const Vector3 &accel)

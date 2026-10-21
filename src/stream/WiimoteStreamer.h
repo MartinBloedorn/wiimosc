@@ -24,8 +24,9 @@ struct OscReceivedMessage;
     Addresses have the form <prefix>/<id>/<path>, see doc/Streaming.md. Values are only sent when they change. Buttons
     are sent immediately, continuous values (orientation, acceleration, ...) at most \c maxRate times per second.
 
-    It also takes OSC input (received()): <prefix>/<id>/mote/rumble/{trigger,pulse} switch a remote's rumble motor, and
-    <prefix>/<id>/mote/speaker/{sine,file,stop} play sounds on its speaker.
+    It also takes OSC input (received()): <prefix>/<id>/mote/rumble/{trigger,pulse} switch a remote's rumble motor,
+    <prefix>/<id>/mote/speaker/{sine,file,stop} play sounds on its speaker, and <prefix>/<id>/mote/hint/yaw moves its
+    fused yaw towards a given one.
  */
 class WiimoteStreamer : public AbstractHubListener
 {
@@ -105,6 +106,13 @@ private:
         Clock::time_point pulseEnd;
     };
 
+    /*! \brief The last mote/hint/yaw not yet applied to a remote's fusion. */
+    struct YawHint {
+        bool isPending = false;
+        float yaw = 0.0f;
+        float strength = 1.0f;
+    };
+
     std::string address(int id, const char *path) const;
     void send(const OscMessage &message);
 
@@ -122,6 +130,9 @@ private:
     /*! \brief Handles <prefix>/<id>/mote/rumble/<command>. Called from the receiver's thread. */
     void receivedRumble(int id, const std::string &command, const OscReceivedMessage &message);
     void setRumbleRequest(int id, const RumbleRequest &request);
+    /*! \brief Handles <prefix>/<id>/mote/hint/<command>. Called from the receiver's thread. */
+    void receivedHint(int id, const std::string &command, const OscReceivedMessage &message);
+    void setYawHint(int id, const YawHint &hint);
     /*! \brief Handles <prefix>/<id>/mote/speaker/<command>. Called from the receiver's thread. */
     void receivedSpeaker(int id, const std::string &command, const OscReceivedMessage &message);
     static void resetSpeaker(Speaker *speaker);
@@ -137,6 +148,8 @@ private:
      */
     RumbleRequest mRumbleRequests[WiimoteHub::sMaxDevices];
     std::mutex mRumbleMutex;
+    YawHint mYawHints[WiimoteHub::sMaxDevices]; //!< like mRumbleRequests, guarded by mHintMutex
+    std::mutex mHintMutex;
     Speaker mSpeakers[WiimoteHub::sMaxDevices]; //!< kept apart from Device for the same reason
     std::set<std::string> mIgnoredAddresses; //!< receiver's thread only
 };

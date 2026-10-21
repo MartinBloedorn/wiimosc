@@ -17,6 +17,7 @@ Last updated: 2026-10-21.
 | Linux | 🧪 builds; works on hardware with a Wiimote Plus (Fedora 43): discovery over D-Bus, connection over plain L2CAP, **no pairing** (SYNC or 1+2 every session, both verified), streaming and fusion. ~60 input reports/s (§9). Board, several remotes, Nunchuk, speaker untested |
 | Sensor fusion (`--fusion madg`: fused rpy with yaw, quaternion) | ✅ works on hardware (user-confirmed); gyro scale and accelerometer handling tuned on recordings of both remotes ([Fusion.md](Fusion.md), §6c) |
 | IR anchors (`--ir anchor=...`: yaw correction by IR emitters) | 🧪 camera sign fixed after the first live test, verified on a sensor bar recording; not yet re-tested live (§6c) |
+| Yaw hints (`mote/hint/yaw <yaw> [strength]` over `--in-port`, overruling anchors) | ✅ on a resting remote (snap, steps, wrap); anchor behaviour unchanged on recordings. ⏳ pitch gate, while moving, together with IR anchors (§6c) |
 
 **Development hardware** (user's machine, Windows 10, VS 2022 Community, CMake, Python 3.11):
 
@@ -186,6 +187,7 @@ The full reference (design, conventions, measurements, tuning method, open work)
 - **Samples** come from `event()` on `WIIUSE_EVENT` (~180 reports/s), with dt measured on the host.
 - **Tuning on recordings**: `wiimosc-record` / `wiimosc-replay` and `data/recordings/`. Use them again for the EKF.
 - **IR anchors** (`--ir [anchor=0,-60,60:20]` with `--fusion`; Fusion.md §10): IR emitters at known yaw (and optional elevation) correct the fused yaw. The first anchor is a sensor bar (home), which can be identified, so it syncs the yaw at startup and recovers it. The others are single sources, matched to the nearest anchor within 20° once synced. `IrAnchorCorrection` keeps a yaw offset on top of the filter's output and nudges it (0.5 s, rate-limited); roll and pitch are never touched. `mote/ir/anchor` reports the anchor in view. There's no separate screen mode: home is where the screen is. `mote/ir/xy` became `mote/ir/xyz` (plus wiiuse's unitless `ir.z`). The first live test showed yaw jumps whenever the bar's second dot came and went: the camera's x (wiiuse's `rx`) grows to the *left*, not the right. Fixed and verified on a recording of sweeps across a bar, which also gave the field of view (39.7°). The simulation had missed it, since it used the code's own camera model: check such assumptions on recordings.
+- **Yaw hints** (`mote/hint/yaw <yaw> [strength]`, Fusion.md §10, Streaming.md): external yaw corrections, e.g. a "this is home" trigger. Strength 0–1 is the share of the way to the target per hint (1 sets it, default). The yaw offset moved from `IrAnchorCorrection` into `MotionFusion` for this. Hints overrule the anchors for 1 s after the last one (the user's choice: explicit input wins). Ignored before the fusion is ready and above 80° pitch.
 
 ## 7. Conventions & preferences
 

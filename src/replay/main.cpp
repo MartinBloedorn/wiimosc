@@ -161,7 +161,7 @@ int main(int argc, char **argv)
                     q.w, q.x, q.y, q.z, tiltError(q, accel),
                     std::sqrt(accel.x * accel.x + accel.y * accel.y + accel.z * accel.z));
         if (correction)
-            std::printf(",%d,%.3f", correction->anchorInView(), correction->yawOffset());
+            std::printf(",%d,%.3f", correction->anchorInView(), fusion.yawOffset());
         std::printf("\n");
     }
     std::fclose(file);

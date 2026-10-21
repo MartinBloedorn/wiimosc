@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <string>
 
@@ -53,6 +54,7 @@ const size_t sMaxIgnoredAddresses = 64;
 /*! \brief The speaker's settings: wiimosc-speaker's defaults, which played best (see doc/Speaker.md). */
 const WiimoteSpeaker::Settings sSpeakerSettings{};
 const char sSpeakerPath[] = "mote/speaker/";
+const char sHintPath[] = "mote/hint/";
 
 } // namespace
 
@@ -67,6 +69,7 @@ WiimoteStreamer::WiimoteStreamer(OscSender &sender, const Options &options)
 void WiimoteStreamer::connected(int id, wiimote_t *wm, DeviceType type)
 {
     setRumbleRequest(id, RumbleRequest{});
+    setYawHint(id, YawHint{});
     Device &device = mDevices[id];
     device = Device{};
     device.type = type;
@@ -117,6 +120,7 @@ void WiimoteStreamer::disconnected(int id, DeviceType)
     send(OscMessage(address(id, "status")).add(std::string("none")));
     mDevices[id] = Device{};
     setRumbleRequest(id, RumbleRequest{});
+    setYawHint(id, YawHint{});
     resetSpeaker(&mSpeakers[id]);
 }
 
@@ -148,6 +152,12 @@ void WiimoteStreamer::updateFusion(int id, wiimote_t *wm)
     // something changed, but the gyro's noise changes on nearly every report, and the time between reports is
     // measured anyway.
     Device &device = mDevices[id];
+    // Taken on every report, so a hint that arrives before the fusion is ready is dropped, not applied later.
+    YawHint hint;
+    {
+        std::lock_guard<std::mutex> lock(mHintMutex);
+        std::swap(hint, mYawHints[id]);
+    }
     if (wm->exp.type != EXP_MOTION_PLUS) {
         device.isFusionActive = false;
         return;
@@ -185,6 +195,8 @@ void WiimoteStreamer::updateFusion(int id, wiimote_t *wm)
     const bool wasReady = device.fusion->isReady();
     device.fusion->addReport(time, rawGyro, isSlow, Vector3{wm->gforce.x, wm->gforce.y, wm->gforce.z},
                              mOptions.isIrEnabled ? &ir : nullptr);
+    if (hint.isPending)
+        device.fusion->hintYaw(hint.yaw, hint.strength);
     if (!wasReady && device.fusion->isReady()) {
         const FilterSetup &setup = device.fusion->setup();
         std::printf("[%d] fusion: ready (gyro bias %.2f, %.2f, %.2f deg/s; %.0f reports/s)%s\n", id,
@@ -269,6 +281,26 @@ void WiimoteStreamer::setRumbleRequest(int id, const RumbleRequest &request)
     mRumbleRequests[id] = request;
 }
 
+void WiimoteStreamer::receivedHint(int id, const std::string &command, const OscReceivedMessage &message)
+{
+    if (command != "yaw")
+        return ignore(message, "unknown address");
+    if (mOptions.fusion == FilterType::None)
+        return ignore(message, "needs --fusion");
+    YawHint hint;
+    hint.isPending = true;
+    if (!message.toFloat(0, &hint.yaw) || !std::isfinite(hint.yaw)
+        || (message.arguments.size() > 1 && (!message.toFloat(1, &hint.strength) || !std::isfinite(hint.strength))))
+        return ignore(message, "expects a yaw (degrees) and optionally a strength (0-1)");
+    setYawHint(id, hint);
+}
+
+void WiimoteStreamer::setYawHint(int id, const YawHint &hint)
+{
+    std::lock_guard<std::mutex> lock(mHintMutex);
+    mYawHints[id] = hint;
+}
+
 void WiimoteStreamer::received(const OscReceivedMessage &message)
 {
     // <prefix>/<id>/<path>
@@ -287,12 +319,15 @@ void WiimoteStreamer::received(const OscReceivedMessage &message)
 
     const bool isSpeaker = path.compare(0, sizeof(sSpeakerPath) - 1, sSpeakerPath) == 0;
     const bool isRumble = path.compare(0, sizeof(sRumblePath) - 1, sRumblePath) == 0;
-    if (!isRumble && !isSpeaker)
+    const bool isHint = path.compare(0, sizeof(sHintPath) - 1, sHintPath) == 0;
+    if (!isRumble && !isSpeaker && !isHint)
         return ignore(message, "unknown address");
     if (id >= WiimoteHub::sMaxDevices)
         return ignore(message, "id out of range");
     if (isSpeaker)
         return receivedSpeaker(id, path.substr(sizeof(sSpeakerPath) - 1), message);
+    if (isHint)
+        return receivedHint(id, path.substr(sizeof(sHintPath) - 1), message);
     receivedRumble(id, path.substr(sizeof(sRumblePath) - 1), message);
 }
 

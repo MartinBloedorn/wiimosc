@@ -30,8 +30,10 @@ MotionFusion::addReport
   ├─ until ready: collectRest       1 s still → FilterSetup {gyro bias, gravity, report rate, gyro range}
   ├─ then: AbstractOrientationFilter::update(MotionSample {dt, gyro, accel})
   │      └─ MadgwickFilter: FusionBias → accelerometer gate / gain → FusionAhrsUpdateNoMagnetometer
-  └─ with --ir and anchors: IrAnchorCorrection::update(filter orientation, IrFrame {visible rx/ry})
-         └─ sources → world bearings → home pair / nearest anchor → yaw offset (set or nudged)
+  └─ with --ir and anchors: IrAnchorCorrection::update(corrected orientation, IrFrame {visible rx/ry})
+         └─ sources → world bearings → home pair / nearest anchor → change to the yaw offset (set or nudged;
+            none for 1 s after a yaw hint)
+MotionFusion::hintYaw (mote/hint/yaw, after addReport) → yaw offset += strength × (target − yaw)
   ▼
 orientation() = Rz(offset) · filter → mote/quat;  toEulerAngles() → mote/rpy   (sent in update(), rate-limited)
 anchorInView() → mote/ir/anchor
@@ -41,12 +43,12 @@ Files (`src/fusion/`, library `motionfusion`, no wiiuse dependency):
 
 | File | Role |
 |---|---|
-| `Orientation.h/.cpp` | `Vector3`, `Quaternion` (body → world), `EulerAngles`; `toEulerAngles()`, `tiltFromGravity()`, `multiply()`, `rotate()`, `yawRotation()` |
-| `IrAnchors.h/.cpp` | `IrAnchor` + `parseIrAnchors()`, `IrFrame` (visible sources), `IrAnchorCorrection` (camera model, matching, yaw offset) |
+| `Orientation.h/.cpp` | `Vector3`, `Quaternion` (body → world), `EulerAngles`; `toEulerAngles()`, `tiltFromGravity()`, `multiply()`, `rotate()`, `yawRotation()`, `wrapDegrees()` |
+| `IrAnchors.h/.cpp` | `IrAnchor` + `parseIrAnchors()`, `IrFrame` (visible sources), `IrAnchorCorrection` (camera model, matching, changes to the yaw offset) |
 | `MotionPlusCalibration.h/.cpp` | Parses the 32-byte calibration (CRC-checked), converts raw values to deg/s |
 | `AbstractOrientationFilter.h` | Filter interface; `MotionSample` (per report) and `FilterSetup` (start state) |
 | `MadgwickFilter.h/.cpp` | Fusion's AHRS plus our accelerometer handling; the only file that includes Fusion |
-| `MotionFusion.h/.cpp` | Per remote: rest calibration, dt, drives the filter; `FilterType` + `parseFilterType()` |
+| `MotionFusion.h/.cpp` | Per remote: rest calibration, dt, drives the filter, keeps the yaw offset (IR anchors, yaw hints); `FilterType` + `parseFilterType()` |
 
 Tools: `wiimosc-record` and `wiimosc-replay` (`src/record`, `src/replay`), with recordings in [`data/recordings/`](../data/recordings/README.md) (§8).
 
@@ -236,6 +238,12 @@ Before the scale fix, every variant showed ~8° mean disagreement during *slow* 
 3. **Live test** of `--ir anchor=0` after the sign fix (the user saw the jumps before it).
 4. **Single sources**: matching and correction with a real single emitter, and its range (the largest distance at which it's still seen, per `--ir-sensitivity`).
 
+**Yaw hints** (`mote/hint/yaw <yaw> [strength]`, 2026-10-21, the user's design): an external "this is home" trigger against drift without IR, or virtual anchors detected by some other system. Each hint moves the offset by `strength × wrap(target − yaw)`, so 1 sets the yaw and smaller values, sent repeatedly, approach it exponentially at the sender's pace. There's no rate limit as for the anchors' nudge: the sender controls the speed.
+
+- **The offset moved** from `IrAnchorCorrection` to `MotionFusion`, so it exists without anchors. `IrAnchorCorrection::update()` now returns the change it wants. Replaying the sensor bar recording with `--ir-anchors 0` gave byte-identical output before and after.
+- **Hints overrule anchors** (the user's choice: they're explicit input, e.g. to get out of a wrong match, or to place virtual anchors). While hints arrive, and for `sHintHold` (1 s) after the last, `update()` only finds the anchor in view, and changes nothing (the home pair's 3-report count is reset as well). After that, the anchors correct from the hinted yaw; a home pair more than 15° off resets it, as always. A hint doesn't set `isSynced()`: single sources still need the real home pair.
+- **Ignored** above `sMaxHintPitch` (80°) of pitch, where yaw is ill-defined, and until the fusion is ready (the streamer drops those, rather than keeping them).
+
 ## 11. Open work
 
 - **IR anchors on hardware**: the remaining checks in §10, then tuning the gates and the nudge on recordings. The bar's direction still varies by ~1.4° (yaw) during large rolls; a small camera mounting tilt or principal point offset could account for it, fittable from the same recording if it matters.
@@ -243,6 +251,6 @@ Before the scale fix, every variant showed ~8° mean disagreement during *slow* 
 - **Metric distance** to the sensor bar: spacing / (2 tan(Δθ/2)) from the angle between its sources. It needs the field of view, and reads farther when viewed from the side (cosine of the angle).
 - New motion recordings with `WITH_ACCEL_10BIT` (the motion recordings so far are 8-bit), to re-check the gate and gains with the finer accelerometer.
 - A MotionPlus accessory on an older Wiimote: measure its sensitivity (one 360° table turn).
-- Re-zeroing yaw (a button or an OSC message).
+- Re-zeroing yaw: possible over OSC with `mote/hint/yaw` (§10), verified on a resting remote; overruling IR anchors is untested. A button for it would need a free button, and none is reserved.
 - Nunchuk pass-through: needs the Nunchuk calibration read first ([DevelopmentNotes](DevelopmentNotes.md) §5), and halves the gyro rate.
 - Very slow, steady turns (< 3 deg/s for several seconds) can be absorbed into the bias by `FusionBias`.

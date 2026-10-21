@@ -61,3 +61,13 @@ Quaternion yawRotation(float degrees)
     const float half = 0.5f * degrees / sRadToDeg;
     return Quaternion{std::cos(half), 0.0f, 0.0f, std::sin(half)};
 }
+
+float wrapDegrees(float degrees)
+{
+    degrees = std::fmod(degrees, 360.0f);
+    if (degrees > 180.0f)
+        degrees -= 360.0f;
+    else if (degrees <= -180.0f)
+        degrees += 360.0f;
+    return degrees;
+}

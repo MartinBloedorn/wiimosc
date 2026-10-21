@@ -34,16 +34,6 @@ const float sTimeConstant = 0.5f;
 const float sStillCorrectionRate = 2.0f;
 const float sMovingCorrectionShare = 0.2f;
 
-float wrapDegrees(float degrees)
-{
-    degrees = std::fmod(degrees, 360.0f);
-    if (degrees > 180.0f)
-        degrees -= 360.0f;
-    else if (degrees <= -180.0f)
-        degrees += 360.0f;
-    return degrees;
-}
-
 /*! \brief A source's direction in the world frame, as yaw and elevation (deg). */
 struct Bearing {
     Vector3 direction; //!< unit length
@@ -128,23 +118,22 @@ IrAnchorCorrection::IrAnchorCorrection(std::vector<IrAnchor> anchors)
 
 void IrAnchorCorrection::restart()
 {
-    mYawOffset = 0.0f;
     mIsSynced = false;
     mPairReports = 0;
     mAnchorInView = -1;
 }
 
-void IrAnchorCorrection::update(float dt, const Quaternion &filtered, float rotationRate, const IrFrame &frame)
+float IrAnchorCorrection::update(float dt, const Quaternion &corrected, float rotationRate, const IrFrame &frame,
+                                 bool isCorrecting)
 {
     mAnchorInView = -1;
     if (mAnchors.empty() || frame.count <= 0)
-        return;
+        return 0.0f;
 
-    const Quaternion q = correct(filtered);
     const int count = std::min(frame.count, 4);
     Bearing bearings[4];
     for (int i = 0; i < count; ++i)
-        bearings[i] = bearingOf(q, frame.dots[i]);
+        bearings[i] = bearingOf(corrected, frame.dots[i]);
 
     // The home anchor, if two sources look like it: it sets the offset, or nudges it.
     const IrAnchor &home = mAnchors[0];
@@ -155,22 +144,25 @@ void IrAnchorCorrection::update(float dt, const Quaternion &filtered, float rota
                 continue;
             mAnchorInView = 0;
             const float residual = wrapDegrees(home.yaw - center.yaw);
+            if (!isCorrecting) {
+                mPairReports = 0;
+                return 0.0f;
+            }
             if (!mIsSynced || std::fabs(residual) > sResyncThreshold) {
                 if (++mPairReports >= sResyncReports) {
-                    mYawOffset = wrapDegrees(mYawOffset + residual);
                     mIsSynced = true;
                     mPairReports = 0;
+                    return residual;
                 }
-            } else {
-                mPairReports = 0;
-                nudge(dt, residual, rotationRate);
+                return 0.0f;
             }
-            return;
+            mPairReports = 0;
+            return nudge(dt, residual, rotationRate);
         }
     }
     mPairReports = 0;
     if (!mIsSynced)
-        return;
+        return 0.0f;
 
     // Single sources: each is taken for the anchor nearest to it. The one that fits best is used.
     int bestAnchor = -1;
@@ -187,23 +179,18 @@ void IrAnchorCorrection::update(float dt, const Quaternion &filtered, float rota
         }
     }
     if (bestAnchor < 0)
-        return;
+        return 0.0f;
     mAnchorInView = bestAnchor;
     // A single source near home is one of its pair (the other is out of view): off by half the pair's span.
-    if (bestAnchor > 0)
-        nudge(dt, bestResidual, rotationRate);
+    if (bestAnchor == 0 || !isCorrecting)
+        return 0.0f;
+    return nudge(dt, bestResidual, rotationRate);
 }
 
-Quaternion IrAnchorCorrection::correct(const Quaternion &q) const
-{
-    return mYawOffset == 0.0f ? q : multiply(yawRotation(mYawOffset), q);
-}
-
-void IrAnchorCorrection::nudge(float dt, float residual, float rotationRate)
+float IrAnchorCorrection::nudge(float dt, float residual, float rotationRate) const
 {
     // Exponentially towards the anchor, but not faster than a small rate, or a share of the turning: corrections
     // are hard to notice while the remote turns, and easy while it's pointed at something.
     const float maxStep = (sStillCorrectionRate + sMovingCorrectionShare * rotationRate) * dt;
-    const float step = std::clamp(residual * std::min(1.0f, dt / sTimeConstant), -maxStep, maxStep);
-    mYawOffset = wrapDegrees(mYawOffset + step);
+    return std::clamp(residual * std::min(1.0f, dt / sTimeConstant), -maxStep, maxStep);
 }
